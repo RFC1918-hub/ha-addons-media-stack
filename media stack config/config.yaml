@@ -1,0 +1,42 @@
+name: Media Stack Configurator
+description: >
+  Automatically wires together Radarr, Sonarr, Prowlarr, qBittorrent and Jellyfin
+  after you have installed them via Alexbelgium's addon repository. Run once and it
+  connects everything — download clients, indexer apps, and root folders.
+version: "1.0.0"
+slug: mediastack-configurator
+init: false
+arch:
+  - aarch64
+  - amd64
+  - armhf
+  - armv7
+  - i386
+startup: once
+boot: manual
+map:
+  - addon_config:rw
+  - media:rw
+options:
+  radarr_port: 7878
+  sonarr_port: 8989
+  prowlarr_port: 9696
+  qbittorrent_port: 8080
+  jellyfin_port: 8096
+  qbittorrent_username: admin
+  qbittorrent_password: ""
+  movies_path: /media/movies
+  tv_path: /media/tv
+  service_timeout: 300
+schema:
+  radarr_port: int
+  sonarr_port: int
+  prowlarr_port: int
+  qbittorrent_port: int
+  jellyfin_port: int
+  qbittorrent_username: str
+  qbittorrent_password: password
+  movies_path: str
+  tv_path: str
+  service_timeout: int
+image: ghcr.io/your-username/ha-mediastack-configurator/{arch}
