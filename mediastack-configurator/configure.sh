@@ -59,13 +59,27 @@ already_exists() {
 
 log_info "[1/9] Extracting API keys from service configs..."
 
+# Debug: show what's mounted and available
+log_info "  Scanning /config/addons for config files..."
+find /config 2>/dev/null | grep -i "config.xml" | head -20 || true
+log_info "  Scanning /addon_configs for config files..."
+find /addon_configs 2>/dev/null | grep -i "config.xml" | head -20 || true
+log_info "  Scanning /data for config files..."
+find /data 2>/dev/null | grep -i "config.xml" | head -20 || true
+
 find_config() {
     local service="$1"
     local config_file
-    # Alexbelgium addons store configs under /addon_configs/<slug>_<service>/
-    config_file=$(find /addon_configs -name "config.xml" 2>/dev/null \
-        | grep -i "${service}" | head -n 1)
-    echo "$config_file"
+    # Try multiple possible base paths
+    for base in /addon_configs /config/addons /data/addon_configs; do
+        config_file=$(find "$base" -name "config.xml" 2>/dev/null \
+            | grep -i "${service}" | head -n 1)
+        if [ -n "$config_file" ]; then
+            echo "$config_file"
+            return 0
+        fi
+    done
+    echo ""
 }
 
 extract_api_key() {
@@ -76,18 +90,45 @@ extract_api_key() {
     xmlstarlet sel -t -v "//ApiKey" "$config_path" 2>/dev/null
 }
 
+# Try fetching API key from config file first, fall back to API initialize endpoint
+fetch_api_key_via_api() {
+    local url="$1"
+    # Radarr/Sonarr/Prowlarr all expose /api/v3/initialize.js or /initialize.js
+    # which contains the API key for unauthenticated local access
+    local key
+    key=$(curl -sf "${url}/initialize.js" 2>/dev/null \
+        | grep -o '"apiKey":"[^"]*"' | cut -d'"' -f4)
+    echo "$key"
+}
+
 RADARR_CONFIG=$(find_config "radarr")
 SONARR_CONFIG=$(find_config "sonarr")
 PROWLARR_CONFIG=$(find_config "prowlarr")
 
-RADARR_API_KEY=$(extract_api_key "$RADARR_CONFIG") \
-    || log_error "Could not find Radarr config.xml. Is the Radarr addon installed and started?"
+log_info "  Radarr config path:   ${RADARR_CONFIG:-NOT FOUND}"
+log_info "  Sonarr config path:   ${SONARR_CONFIG:-NOT FOUND}"
+log_info "  Prowlarr config path: ${PROWLARR_CONFIG:-NOT FOUND}"
 
-SONARR_API_KEY=$(extract_api_key "$SONARR_CONFIG") \
-    || log_error "Could not find Sonarr config.xml. Is the Sonarr addon installed and started?"
+RADARR_API_KEY=$(extract_api_key "$RADARR_CONFIG")
+if [ -z "$RADARR_API_KEY" ]; then
+    log_warn "  config.xml not found for Radarr, trying API endpoint..."
+    RADARR_API_KEY=$(fetch_api_key_via_api "${RADARR_URL}")
+fi
+[ -z "$RADARR_API_KEY" ] && log_error "Could not get Radarr API key. Is the Radarr addon running?"
 
-PROWLARR_API_KEY=$(extract_api_key "$PROWLARR_CONFIG") \
-    || log_error "Could not find Prowlarr config.xml. Is the Prowlarr addon installed and started?"
+SONARR_API_KEY=$(extract_api_key "$SONARR_CONFIG")
+if [ -z "$SONARR_API_KEY" ]; then
+    log_warn "  config.xml not found for Sonarr, trying API endpoint..."
+    SONARR_API_KEY=$(fetch_api_key_via_api "${SONARR_URL}")
+fi
+[ -z "$SONARR_API_KEY" ] && log_error "Could not get Sonarr API key. Is the Sonarr addon running?"
+
+PROWLARR_API_KEY=$(extract_api_key "$PROWLARR_CONFIG")
+if [ -z "$PROWLARR_API_KEY" ]; then
+    log_warn "  config.xml not found for Prowlarr, trying API endpoint..."
+    PROWLARR_API_KEY=$(fetch_api_key_via_api "${PROWLARR_URL}")
+fi
+[ -z "$PROWLARR_API_KEY" ] && log_error "Could not get Prowlarr API key. Is the Prowlarr addon running?"
 
 log_success "  Radarr API key:   ${RADARR_API_KEY:0:8}..."
 log_success "  Sonarr API key:   ${SONARR_API_KEY:0:8}..."
