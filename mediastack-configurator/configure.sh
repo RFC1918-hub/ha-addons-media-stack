@@ -671,14 +671,27 @@ radarr:
     api_key: ${RADARR_API_KEY}
     quality_definition:
       type: movie
+    media_naming:
+      folder: default
+      movie:
+        rename: true
+        standard: default
 sonarr:
   series:
     base_url: ${RECYCLARR_SONARR_URL}
     api_key: ${SONARR_API_KEY}
     quality_definition:
       type: series
+    media_naming:
+      series: default
+      season: default
+      episodes:
+        rename: true
+        standard: default
+        daily: default
+        anime: default
 EOF
-            log_info "  Syncing quality definitions from TRaSH Guides..."
+            log_info "  Syncing quality definitions and naming scheme from TRaSH Guides..."
             if recyclarr sync --config /tmp/recyclarr.yml 2>&1 | \
                     while IFS= read -r line; do log_info "    ${line}"; done; then
                 log_success "  Recyclarr sync completed."
