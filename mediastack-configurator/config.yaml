@@ -39,4 +39,4 @@ schema:
   movies_path: str
   tv_path: str
   service_timeout: int
-image: ghcr.io/rfc1918-hub/ha-mediastack-configurator/{arch}
+
