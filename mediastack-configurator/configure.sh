@@ -622,6 +622,8 @@ if [ "$RECYCLARR_ENABLED" = "true" ]; then
     log_info "[10/10] Running Recyclarr (TRaSH Guides quality sync)..."
     if ! command -v recyclarr > /dev/null 2>&1; then
         log_warn "  Recyclarr binary not found — skipping."
+    elif ! recyclarr --version > /dev/null 2>&1; then
+        log_warn "  Recyclarr installed but cannot execute (missing runtime?) — skipping."
     else
         cat > /tmp/recyclarr.yml <<EOF
 radarr:
