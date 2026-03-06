@@ -357,15 +357,11 @@ fi
 # Radarr/Sonarr "Authentication Failure" errors and auto-heals if the
 # Alexbelgium addon is still using default credentials.
 
-# trying the configured ones then common defaults. This avoids confusing
-# Radarr/Sonarr "Authentication Failure" errors and auto-heals if the
-# Alexbelgium addon is still using default credentials.
-
 # Discover qBittorrent URL base — Alexbelgium builds may use /qbittorrent/
 # We probe by POSTing dummy credentials: "Fails." = URL exists, empty = URL wrong.
 QBIT_URL_BASE=""
 for try_base in "" "/qbittorrent" "/downloads" "/qbt"; do
-    probe=$(curl -sL --max-time 5 \
+    probe=$(curl -s --max-time 5 \
         -X POST \
         -d "username=probe&password=probe" \
         "http://${LOCAL_HOST}:${QBIT_PORT}${try_base}/api/v2/auth/login" 2>/dev/null || true)
@@ -384,7 +380,7 @@ log_info "  qBittorrent login URL: ${QBIT_LOGIN_URL}"
 qbit_try_login() {
     local user="$1" pass="$2"
     local result
-    result=$(curl -sfL --max-time 5 \
+    result=$(curl -sf --max-time 5 \
         -c /tmp/qbit_cookies.txt \
         -X POST \
         -d "username=${user}&password=${pass}" \
