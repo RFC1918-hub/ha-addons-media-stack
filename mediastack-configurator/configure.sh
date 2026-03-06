@@ -631,7 +631,7 @@ if [ "$RECYCLARR_ENABLED" = "true" ]; then
         RECYCLARR_RADARR_URL=""
         RECYCLARR_SONARR_URL=""
         for try_host in "${LOCAL_HOST}" "${HOST_IP}"; do
-            probe=$(curl -sf --max-time 5 \
+            probe=$(curl -sfL --max-time 5 \
                 -H "X-Api-Key: ${RADARR_API_KEY}" \
                 "http://${try_host}:${RADARR_PORT}/api/v3/system/status" 2>/dev/null || true)
             if echo "$probe" | jq -e '.appName' > /dev/null 2>&1; then
@@ -642,7 +642,7 @@ if [ "$RECYCLARR_ENABLED" = "true" ]; then
             log_info "  Radarr not reachable at ${try_host}:${RADARR_PORT} via API — trying next"
         done
         for try_host in "${LOCAL_HOST}" "${HOST_IP}"; do
-            probe=$(curl -sf --max-time 5 \
+            probe=$(curl -sfL --max-time 5 \
                 -H "X-Api-Key: ${SONARR_API_KEY}" \
                 "http://${try_host}:${SONARR_PORT}/api/v3/system/status" 2>/dev/null || true)
             if echo "$probe" | jq -e '.appName' > /dev/null 2>&1; then
