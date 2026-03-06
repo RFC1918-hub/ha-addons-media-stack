@@ -22,10 +22,10 @@ QBIT_URL="http://${HOST}:${QBIT_PORT}"
 
 # ── Helpers ───────────────────────────────────────────────────────
 
-log_info()    { bashio::log.info    "$1"; }
-log_success() { bashio::log.green   "$1"; }
-log_error()   { bashio::log.error   "$1"; exit 1; }
-log_warn()    { bashio::log.warning "$1"; }
+log_info()    { echo "[INFO]   "    "$1"; }
+log_success() { echo "[OK]     "   "$1"; }
+log_error()   { echo "[ERROR]  "   "$1"; exit 1; }
+log_warn()    { echo "[WARN]   " "$1"; }
 
 api_get() {
     local url="$1"
