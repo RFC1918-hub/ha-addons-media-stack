@@ -10,9 +10,9 @@ RUN apk add --no-cache \
 
 # Copy scripts
 COPY run.sh /run.sh
-COPY scripts/configure.sh /scripts/configure.sh
+COPY configure.sh /configure.sh
 
 # Make executable
-RUN chmod +x /run.sh /scripts/configure.sh
+RUN chmod +x /run.sh /configure.sh
 
 CMD ["/run.sh"]
