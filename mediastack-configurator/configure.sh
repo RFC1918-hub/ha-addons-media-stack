@@ -350,65 +350,66 @@ else
         || log_warn "  Failed — check Sonarr UI"
 fi
 
-# ── Step 4: qBittorrent → Radarr ────────────────────────────────
+# ── Steps 4 & 5: Register qBittorrent ───────────────────────────
+#
+# Radarr/Sonarr TEST the qBittorrent login when registering the client.
+# The credentials must exactly match qBittorrent's web UI settings.
+# In the Alexbelgium qBittorrent addon: Configuration tab → WebUI Password.
+
+register_qbittorrent() {
+    local arr_name="$1"
+    local arr_url="$2"
+    local arr_key="$3"
+    local category="$4"
+    local endpoint="$5"   # api/v3 for Radarr/Sonarr
+    local cat_field="$6"  # movieCategory or tvCategory
+
+    log_info "[${arr_name}] Registering qBittorrent..."
+    local existing
+    existing=$(api_get "${arr_url}/${endpoint}/downloadclient" "$arr_key")
+    if already_exists "$existing" "qBittorrent"; then
+        log_warn "  Already registered — skipping."
+        return 0
+    fi
+
+    local PAYLOAD
+    PAYLOAD=$(cat <<EOF
+{
+  "name": "qBittorrent", "enable": true, "protocol": "torrent", "priority": 1,
+  "implementation": "QBittorrent", "configContract": "QBittorrentSettings",
+  "fields": [
+    {"name": "host",          "value": "${QBIT_EXT_HOST}"},
+    {"name": "port",          "value": ${QBIT_PORT}},
+    {"name": "useSsl",        "value": false},
+    {"name": "urlBase",       "value": ""},
+    {"name": "username",      "value": "${QBIT_USER}"},
+    {"name": "password",      "value": "${QBIT_PASS}"},
+    {"name": "${cat_field}",  "value": "${category}"},
+    {"name": "initialState",  "value": 0}
+  ]
+}
+EOF
+)
+    if api_post "${arr_url}/${endpoint}/downloadclient" "$arr_key" "$PAYLOAD" > /dev/null; then
+        log_success "  Registered."
+    else
+        log_warn "  Failed to register qBittorrent in ${arr_name}."
+        log_warn "  ► Most likely cause: wrong qBittorrent credentials."
+        log_warn "  ► Fix: in the Alexbelgium qBittorrent addon go to"
+        log_warn "         Configuration → set a WebUI password, then set"
+        log_warn "         qbittorrent_password in THIS addon's Configuration"
+        log_warn "         tab to the same value and re-run."
+        log_warn "  ► Or disable authentication in qBittorrent:"
+        log_warn "         Tools → Options → Web UI → uncheck 'Authentication'"
+        return 1
+    fi
+}
 
 log_info "[4/9] Registering qBittorrent in Radarr..."
-existing=$(api_get "${RADARR_URL}/api/v3/downloadclient" "$RADARR_API_KEY")
-if already_exists "$existing" "qBittorrent"; then
-    log_warn "  Already registered — skipping."
-else
-    PAYLOAD=$(cat <<EOF
-{
-  "name": "qBittorrent", "enable": true, "protocol": "torrent", "priority": 1,
-  "implementation": "QBittorrent", "configContract": "QBittorrentSettings",
-  "fields": [
-    {"name": "host",                "value": "${QBIT_EXT_HOST}"},
-    {"name": "port",                "value": ${QBIT_PORT}},
-    {"name": "useSsl",              "value": false},
-    {"name": "urlBase",             "value": ""},
-    {"name": "username",            "value": "${QBIT_USER}"},
-    {"name": "password",            "value": "${QBIT_PASS}"},
-    {"name": "movieCategory",       "value": "radarr"},
-    {"name": "recentMoviePriority", "value": 0},
-    {"name": "olderMoviePriority",  "value": 0},
-    {"name": "initialState",        "value": 0}
-  ]
-}
-EOF
-)
-    api_post "${RADARR_URL}/api/v3/downloadclient" "$RADARR_API_KEY" "$PAYLOAD" > /dev/null \
-        && log_success "  Registered." || log_warn "  Failed — check Radarr UI"
-fi
-
-# ── Step 5: qBittorrent → Sonarr ────────────────────────────────
+register_qbittorrent "Radarr" "$RADARR_URL" "$RADARR_API_KEY" "radarr" "api/v3" "movieCategory"
 
 log_info "[5/9] Registering qBittorrent in Sonarr..."
-existing=$(api_get "${SONARR_URL}/api/v3/downloadclient" "$SONARR_API_KEY")
-if already_exists "$existing" "qBittorrent"; then
-    log_warn "  Already registered — skipping."
-else
-    PAYLOAD=$(cat <<EOF
-{
-  "name": "qBittorrent", "enable": true, "protocol": "torrent", "priority": 1,
-  "implementation": "QBittorrent", "configContract": "QBittorrentSettings",
-  "fields": [
-    {"name": "host",             "value": "${QBIT_EXT_HOST}"},
-    {"name": "port",             "value": ${QBIT_PORT}},
-    {"name": "useSsl",           "value": false},
-    {"name": "urlBase",          "value": ""},
-    {"name": "username",         "value": "${QBIT_USER}"},
-    {"name": "password",         "value": "${QBIT_PASS}"},
-    {"name": "tvCategory",       "value": "sonarr"},
-    {"name": "recentTvPriority", "value": 0},
-    {"name": "olderTvPriority",  "value": 0},
-    {"name": "initialState",     "value": 0}
-  ]
-}
-EOF
-)
-    api_post "${SONARR_URL}/api/v3/downloadclient" "$SONARR_API_KEY" "$PAYLOAD" > /dev/null \
-        && log_success "  Registered." || log_warn "  Failed — check Sonarr UI"
-fi
+register_qbittorrent "Sonarr" "$SONARR_URL" "$SONARR_API_KEY" "sonarr" "api/v3" "tvCategory"
 
 # ── Step 6: Radarr → Prowlarr ────────────────────────────────────
 
