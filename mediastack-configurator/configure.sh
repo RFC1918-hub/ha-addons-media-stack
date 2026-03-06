@@ -55,82 +55,129 @@ extract_api_key() {
     local slug="$4"
     local key="" response=""
 
+    # NOTE: All log output in this function goes to stderr (>&2)
+    # because stdout is used to return the API key via echo.
+
     # ── Strategy 1: Manual key from addon options ────────────────
     if [ -n "$manual_key" ] && [ "$manual_key" != "null" ]; then
-        log_info "    → Using manually provided key"
+        echo "    → Using manually provided key" >&2
         echo "$manual_key"
         return 0
     fi
 
     # ── Strategy 2: Scrape from web UI HTML ──────────────────────
     #    Modern *arr apps embed: window.Radarr = {"apiKey":"<hex>", ...}
-    response=$(curl -sf --max-time 10 "${service_url}/" 2>/dev/null)
+    response=$(curl -sf -L --max-time 10 "${service_url}/" 2>/dev/null || true)
     if [ -n "$response" ]; then
-        # Primary pattern: "apiKey":"<32-char hex>"
-        key=$(echo "$response" | grep -oE '"apiKey":"[a-f0-9]{32}"' | head -1 | sed 's/"apiKey":"//;s/"//')
+        echo "    → Web UI returned ${#response} bytes" >&2
+        # Show first 500 chars for debugging
+        echo "    → HTML preview: $(echo "$response" | head -c 500 | tr '\n' ' ')" >&2
+        # Primary pattern: "apiKey":"<hex>"
+        key=$(echo "$response" | grep -oE '"apiKey":"[a-fA-F0-9]+"' | head -1 | sed 's/"apiKey":"//;s/"//')
         if [ -n "$key" ]; then
-            log_info "    → Extracted from web UI HTML"
+            echo "    → Extracted from web UI HTML" >&2
             echo "$key"
             return 0
         fi
-        # Alt pattern: wider hex length range
-        key=$(echo "$response" | grep -oE '"apiKey":"[a-f0-9]+"' | head -1 | sed 's/"apiKey":"//;s/"//')
+        # Alt: apiKey in single quotes or with spaces
+        key=$(echo "$response" | grep -oE "apiKey['\"]?[: ]*['\"]?[a-fA-F0-9]{20,}" | head -1 | grep -oE '[a-fA-F0-9]{20,}')
         if [ -n "$key" ]; then
-            log_info "    → Extracted from web UI HTML (alt pattern)"
+            echo "    → Extracted from web UI HTML (alt pattern)" >&2
             echo "$key"
             return 0
         fi
+    else
+        echo "    → Web UI returned empty response from ${service_url}/" >&2
     fi
 
     # ── Strategy 3: /initialize.js ───────────────────────────────
-    response=$(curl -sf --max-time 10 "${service_url}/initialize.js" 2>/dev/null)
+    response=$(curl -sf -L --max-time 10 "${service_url}/initialize.js" 2>/dev/null || true)
     if [ -n "$response" ]; then
-        key=$(echo "$response" | grep -oE '"apiKey":"[a-f0-9]+"' | head -1 | sed 's/"apiKey":"//;s/"//')
+        echo "    → initialize.js returned ${#response} bytes" >&2
+        key=$(echo "$response" | grep -oE '"apiKey":"[a-fA-F0-9]+"' | head -1 | sed 's/"apiKey":"//;s/"//')
         if [ -n "$key" ]; then
-            log_info "    → Extracted from initialize.js"
+            echo "    → Extracted from initialize.js" >&2
             echo "$key"
             return 0
         fi
+    else
+        echo "    → initialize.js empty or not found" >&2
     fi
 
     # ── Strategy 4: /initialize.json ─────────────────────────────
-    response=$(curl -sf --max-time 10 "${service_url}/initialize.json" 2>/dev/null)
+    response=$(curl -sf -L --max-time 10 "${service_url}/initialize.json" 2>/dev/null || true)
     if [ -n "$response" ]; then
+        echo "    → initialize.json returned ${#response} bytes" >&2
         key=$(echo "$response" | jq -r '.apiKey // empty' 2>/dev/null)
         if [ -n "$key" ]; then
-            log_info "    → Extracted from initialize.json"
+            echo "    → Extracted from initialize.json" >&2
             echo "$key"
             return 0
         fi
+    else
+        echo "    → initialize.json empty or not found" >&2
     fi
 
-    # ── Strategy 5: Read config.xml from filesystem ──────────────
+    # ── Strategy 5: API endpoint without auth (some builds) ──────
+    #    Try /api/v3/system/status and /api/v1/system/status — some
+    #    *arr builds allow unauthenticated access from localhost.
+    for api_ver in v3 v1; do
+        response=$(curl -sf -L --max-time 10 "${service_url}/api/${api_ver}/system/status" 2>/dev/null || true)
+        if [ -n "$response" ]; then
+            echo "    → /api/${api_ver}/system/status returned data" >&2
+            break
+        fi
+    done
+
+    # ── Strategy 6: Supervisor API — read addon info/stats ───────
+    if [ -n "$SUPERVISOR_TOKEN" ] && [ -n "$slug" ]; then
+        # Try to get the addon's webui URL or other info
+        local addon_info
+        addon_info=$(curl -sf \
+            -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+            "http://supervisor/addons/${slug}/info" 2>/dev/null || true)
+        if [ -n "$addon_info" ]; then
+            echo "    → Supervisor addon info keys: $(echo "$addon_info" | jq -r '.data | keys[]' 2>/dev/null | tr '\n' ', ')" >&2
+            # Check if there's an options field that might contain the API key
+            local options_key
+            options_key=$(echo "$addon_info" | jq -r '.data.options.ApiKey // .data.options.apiKey // .data.options.api_key // empty' 2>/dev/null)
+            if [ -n "$options_key" ]; then
+                echo "    → Extracted from Supervisor addon options" >&2
+                echo "$options_key"
+                return 0
+            fi
+        fi
+    fi
+
+    # ── Strategy 7: Read config.xml from filesystem ──────────────
     if [ -n "$slug" ]; then
         local search_dirs=(
             "/addon_configs/${slug}"
             "/config/addons_config/${slug}"
             "/share/${slug}"
             "/data/addons/${slug}"
+            "/config/${slug}"
         )
         for base_dir in "${search_dirs[@]}"; do
             if [ -d "$base_dir" ]; then
-                log_info "    → Searching ${base_dir} for config.xml..."
+                echo "    → Searching ${base_dir} for config.xml..." >&2
                 local xml_file
                 xml_file=$(find "$base_dir" -name "config.xml" -type f 2>/dev/null | head -1)
                 if [ -n "$xml_file" ]; then
                     key=$(xmlstarlet sel -t -v "//ApiKey" "$xml_file" 2>/dev/null)
                     if [ -n "$key" ]; then
-                        log_info "    → Extracted from ${xml_file}"
+                        echo "    → Extracted from ${xml_file}" >&2
                         echo "$key"
                         return 0
                     fi
                 fi
             fi
         done
+        echo "    → No config.xml found in any search path" >&2
     fi
 
     # ── All strategies failed ────────────────────────────────────
-    log_warn "    → All auto-extraction methods failed for ${service_name}"
+    echo "    → All auto-extraction methods failed for ${service_name}" >&2
     return 1
 }
 
@@ -194,19 +241,19 @@ MANUAL_SONARR_KEY=$(jq -r '.sonarr_api_key // empty' "$OPTIONS" 2>/dev/null)
 MANUAL_PROWLARR_KEY=$(jq -r '.prowlarr_api_key // empty' "$OPTIONS" 2>/dev/null)
 
 log_info "  Extracting Radarr API key..."
-RADARR_API_KEY=$(extract_api_key "Radarr" "$RADARR_URL" "$MANUAL_RADARR_KEY" "$RADARR_SLUG")
+RADARR_API_KEY=$(extract_api_key "Radarr" "$RADARR_URL" "$MANUAL_RADARR_KEY" "$RADARR_SLUG") || RADARR_API_KEY=""
 if [ -z "$RADARR_API_KEY" ]; then
     log_error "Could not extract Radarr API key. Set radarr_api_key in addon Configuration tab."
 fi
 
 log_info "  Extracting Sonarr API key..."
-SONARR_API_KEY=$(extract_api_key "Sonarr" "$SONARR_URL" "$MANUAL_SONARR_KEY" "$SONARR_SLUG")
+SONARR_API_KEY=$(extract_api_key "Sonarr" "$SONARR_URL" "$MANUAL_SONARR_KEY" "$SONARR_SLUG") || SONARR_API_KEY=""
 if [ -z "$SONARR_API_KEY" ]; then
     log_error "Could not extract Sonarr API key. Set sonarr_api_key in addon Configuration tab."
 fi
 
 log_info "  Extracting Prowlarr API key..."
-PROWLARR_API_KEY=$(extract_api_key "Prowlarr" "$PROWLARR_URL" "$MANUAL_PROWLARR_KEY" "$PROWLARR_SLUG")
+PROWLARR_API_KEY=$(extract_api_key "Prowlarr" "$PROWLARR_URL" "$MANUAL_PROWLARR_KEY" "$PROWLARR_SLUG") || PROWLARR_API_KEY=""
 if [ -z "$PROWLARR_API_KEY" ]; then
     log_error "Could not extract Prowlarr API key. Set prowlarr_api_key in addon Configuration tab."
 fi
