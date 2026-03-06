@@ -16,8 +16,20 @@ export QBIT_PASS=$(jq -r '.qbittorrent_password' "$OPTIONS")
 export MOVIES_PATH=$(jq -r '.movies_path'        "$OPTIONS")
 export TV_PATH=$(jq -r '.tv_path'                "$OPTIONS")
 
-# SUPERVISOR_TOKEN is injected automatically by HA when hassio_api: true
-export SUPERVISOR_TOKEN="${SUPERVISOR_TOKEN:-}"
+# SUPERVISOR_TOKEN is injected automatically by HA when hassio_api: true.
+# Try multiple known locations — the env var may be named differently
+# or stored in a file depending on HA / S6 version.
+if [ -n "${SUPERVISOR_TOKEN:-}" ]; then
+    export SUPERVISOR_TOKEN
+elif [ -n "${HASSIO_TOKEN:-}" ]; then
+    export SUPERVISOR_TOKEN="$HASSIO_TOKEN"
+elif [ -f /run/s6/container_environment/SUPERVISOR_TOKEN ]; then
+    export SUPERVISOR_TOKEN=$(cat /run/s6/container_environment/SUPERVISOR_TOKEN)
+elif [ -f /var/run/s6/container_environment/SUPERVISOR_TOKEN ]; then
+    export SUPERVISOR_TOKEN=$(cat /var/run/s6/container_environment/SUPERVISOR_TOKEN)
+else
+    export SUPERVISOR_TOKEN=""
+fi
 
 HOST="127.0.0.1"
 
@@ -39,8 +51,24 @@ wait_for_service() {
 }
 
 log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-log_info "  Media Stack Configurator starting"
+log_info "  Media Stack Configurator v2.0.0"
 log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+# ── Debug: dump token/env info ───────────────────────────────────
+log_info "DEBUG — SUPERVISOR_TOKEN set: $([ -n \"$SUPERVISOR_TOKEN\" ] && echo YES || echo NO)"
+log_info "DEBUG — env vars matching SUPER/HASS/TOKEN:"
+env | grep -iE 'super|hass|token' 2>/dev/null | while read -r line; do
+    # Mask token values for security (show first 8 chars)
+    key=$(echo "$line" | cut -d= -f1)
+    val=$(echo "$line" | cut -d= -f2-)
+    if [ ${#val} -gt 8 ]; then
+        log_info "  ${key}=${val:0:8}..."
+    else
+        log_info "  ${key}=${val}"
+    fi
+done
+log_info "DEBUG — /run/s6/ exists: $([ -d /run/s6 ] && echo YES || echo NO)"
+log_info "DEBUG — init=false, hassio_api=true, hassio_role=manager"
 
 wait_for_service "Radarr"      "$RADARR_PORT"
 wait_for_service "Sonarr"      "$SONARR_PORT"

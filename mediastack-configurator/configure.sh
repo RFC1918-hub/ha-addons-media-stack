@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
 
 HOST="127.0.0.1"
+OPTIONS="/data/options.json"
 
 RADARR_URL="http://${HOST}:${RADARR_PORT}"
 SONARR_URL="http://${HOST}:${SONARR_PORT}"
 PROWLARR_URL="http://${HOST}:${PROWLARR_PORT}"
 QBIT_URL="http://${HOST}:${QBIT_PORT}"
 
+# ── Logging ──────────────────────────────────────────────────────
+
 log_info()    { echo "[INFO]    $1"; }
 log_success() { echo "[OK]      $1"; }
 log_error()   { echo "[ERROR]   $1"; exit 1; }
 log_warn()    { echo "[WARNING] $1"; }
+
+# ── HTTP helpers ─────────────────────────────────────────────────
 
 api_get() {
     local url="$1" api_key="$2"
@@ -29,73 +34,187 @@ already_exists() {
     echo "$1" | jq -e --arg n "$2" '.[] | select(.name == $n)' > /dev/null 2>&1
 }
 
-# ── Step 1: Auto-extract API keys ────────────────────────────────
+# ── API Key extraction (multi-strategy) ──────────────────────────
+#
+# Tries these methods in order:
+#   1. Manual key from addon options (always wins if provided)
+#   2. Scrape from *arr web UI HTML (window.Radarr = {"apiKey":"..."})
+#   3. Try /initialize.js endpoint
+#   4. Try /initialize.json endpoint
+#   5. Read config.xml from filesystem (/addon_configs/{slug}/...)
+#
+# Falls back to clear error message telling user to set the key
+# manually in addon options.
 
-log_info "[1/9] Auto-extracting API keys via Supervisor API..."
+ALEX_PREFIX="dad6a9e6"
 
-# The Supervisor token is injected as an env var by HA
-SUPERVISOR_TOKEN="${SUPERVISOR_TOKEN:-}"
-if [ -z "$SUPERVISOR_TOKEN" ]; then
-    log_error "SUPERVISOR_TOKEN not available. Make sure hassio_api: true is set in config.yaml"
+extract_api_key() {
+    local service_name="$1"
+    local service_url="$2"
+    local manual_key="$3"
+    local slug="$4"
+    local key="" response=""
+
+    # ── Strategy 1: Manual key from addon options ────────────────
+    if [ -n "$manual_key" ] && [ "$manual_key" != "null" ]; then
+        log_info "    → Using manually provided key"
+        echo "$manual_key"
+        return 0
+    fi
+
+    # ── Strategy 2: Scrape from web UI HTML ──────────────────────
+    #    Modern *arr apps embed: window.Radarr = {"apiKey":"<hex>", ...}
+    response=$(curl -sf --max-time 10 "${service_url}/" 2>/dev/null)
+    if [ -n "$response" ]; then
+        # Primary pattern: "apiKey":"<32-char hex>"
+        key=$(echo "$response" | grep -oE '"apiKey":"[a-f0-9]{32}"' | head -1 | sed 's/"apiKey":"//;s/"//')
+        if [ -n "$key" ]; then
+            log_info "    → Extracted from web UI HTML"
+            echo "$key"
+            return 0
+        fi
+        # Alt pattern: wider hex length range
+        key=$(echo "$response" | grep -oE '"apiKey":"[a-f0-9]+"' | head -1 | sed 's/"apiKey":"//;s/"//')
+        if [ -n "$key" ]; then
+            log_info "    → Extracted from web UI HTML (alt pattern)"
+            echo "$key"
+            return 0
+        fi
+    fi
+
+    # ── Strategy 3: /initialize.js ───────────────────────────────
+    response=$(curl -sf --max-time 10 "${service_url}/initialize.js" 2>/dev/null)
+    if [ -n "$response" ]; then
+        key=$(echo "$response" | grep -oE '"apiKey":"[a-f0-9]+"' | head -1 | sed 's/"apiKey":"//;s/"//')
+        if [ -n "$key" ]; then
+            log_info "    → Extracted from initialize.js"
+            echo "$key"
+            return 0
+        fi
+    fi
+
+    # ── Strategy 4: /initialize.json ─────────────────────────────
+    response=$(curl -sf --max-time 10 "${service_url}/initialize.json" 2>/dev/null)
+    if [ -n "$response" ]; then
+        key=$(echo "$response" | jq -r '.apiKey // empty' 2>/dev/null)
+        if [ -n "$key" ]; then
+            log_info "    → Extracted from initialize.json"
+            echo "$key"
+            return 0
+        fi
+    fi
+
+    # ── Strategy 5: Read config.xml from filesystem ──────────────
+    if [ -n "$slug" ]; then
+        local search_dirs=(
+            "/addon_configs/${slug}"
+            "/config/addons_config/${slug}"
+            "/share/${slug}"
+            "/data/addons/${slug}"
+        )
+        for base_dir in "${search_dirs[@]}"; do
+            if [ -d "$base_dir" ]; then
+                log_info "    → Searching ${base_dir} for config.xml..."
+                local xml_file
+                xml_file=$(find "$base_dir" -name "config.xml" -type f 2>/dev/null | head -1)
+                if [ -n "$xml_file" ]; then
+                    key=$(xmlstarlet sel -t -v "//ApiKey" "$xml_file" 2>/dev/null)
+                    if [ -n "$key" ]; then
+                        log_info "    → Extracted from ${xml_file}"
+                        echo "$key"
+                        return 0
+                    fi
+                fi
+            fi
+        done
+    fi
+
+    # ── All strategies failed ────────────────────────────────────
+    log_warn "    → All auto-extraction methods failed for ${service_name}"
+    return 1
+}
+
+# ── Step 1: Extract API keys ─────────────────────────────────────
+
+log_info "[1/9] Extracting API keys..."
+
+# Discover addon slugs via Supervisor API (single call)
+ADDON_LIST=""
+if [ -n "$SUPERVISOR_TOKEN" ]; then
+    ADDON_LIST=$(curl -sf \
+        -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+        "http://supervisor/addons" 2>/dev/null)
+    if [ -n "$ADDON_LIST" ]; then
+        log_info "  Installed addons:"
+        echo "$ADDON_LIST" | jq -r '.data.addons[] | "    \(.slug)  \(.name)  [\(.state)]"' 2>/dev/null || true
+    else
+        log_warn "  Could not list addons from Supervisor API"
+    fi
+else
+    log_warn "  SUPERVISOR_TOKEN not set — slug discovery disabled"
 fi
 
-# List all installed addons to find the right slugs
-ADDONS=$(curl -sf \
-    -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
-    "http://supervisor/addons" 2>/dev/null)
-
-log_info "  Installed addons:"
-echo "$ADDONS" | jq -r '.data.addons[] | "\(.slug) - \(.name)"' 2>/dev/null || log_warn "  Could not list addons"
-
-# Find slugs dynamically by name match
-RADARR_SLUG=$(echo "$ADDONS"   | jq -r '.data.addons[] | select(.name | test("(?i)radarr"))   | .slug' | head -1)
-SONARR_SLUG=$(echo "$ADDONS"   | jq -r '.data.addons[] | select(.name | test("(?i)sonarr"))   | .slug' | head -1)
-PROWLARR_SLUG=$(echo "$ADDONS" | jq -r '.data.addons[] | select(.name | test("(?i)prowlarr")) | .slug' | head -1)
-
-log_info "  Radarr slug:   ${RADARR_SLUG:-NOT FOUND}"
-log_info "  Sonarr slug:   ${SONARR_SLUG:-NOT FOUND}"
-log_info "  Prowlarr slug: ${PROWLARR_SLUG:-NOT FOUND}"
-
-# Get config path for each addon via Supervisor API
-get_addon_config_path() {
-    local slug="$1"
-    curl -sf \
-        -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
-        "http://supervisor/addons/${slug}/info" 2>/dev/null \
-        | jq -r '.data.config_path // empty'
-}
-
-extract_api_key_from_xml() {
-    local config_path="$1"
-    local xml_file="${config_path}/config.xml"
-    if [ ! -f "$xml_file" ]; then
-        # Try one level deeper — some addons use a subdir
-        xml_file=$(find "$config_path" -name "config.xml" 2>/dev/null | head -1)
+find_slug() {
+    local pattern="$1" fallback="$2"
+    local slug=""
+    if [ -n "$ADDON_LIST" ]; then
+        # First: match name AND Alexbelgium slug prefix
+        slug=$(echo "$ADDON_LIST" | jq -r --arg pat "$pattern" --arg pfx "${ALEX_PREFIX}_" \
+            '.data.addons[] | select((.name | test($pat; "i")) and (.slug | startswith($pfx))) | .slug' \
+            | head -1)
+        # Second: just match name (non-Alexbelgium installs)
+        if [ -z "$slug" ]; then
+            slug=$(echo "$ADDON_LIST" | jq -r --arg pat "$pattern" \
+                '.data.addons[] | select(.name | test($pat; "i")) | .slug' | head -1)
+        fi
     fi
-    [ -z "$xml_file" ] && return 1
-    xmlstarlet sel -t -v "//ApiKey" "$xml_file" 2>/dev/null
+    echo "${slug:-$fallback}"
 }
 
-RADARR_CONFIG_PATH=$(get_addon_config_path "$RADARR_SLUG")
-SONARR_CONFIG_PATH=$(get_addon_config_path "$SONARR_SLUG")
-PROWLARR_CONFIG_PATH=$(get_addon_config_path "$PROWLARR_SLUG")
+RADARR_SLUG=$(find_slug "radarr" "${ALEX_PREFIX}_radarr_nas")
+SONARR_SLUG=$(find_slug "sonarr" "${ALEX_PREFIX}_sonarr_nas")
+PROWLARR_SLUG=$(find_slug "prowlarr" "${ALEX_PREFIX}_prowlarr")
 
-log_info "  Radarr config path:   ${RADARR_CONFIG_PATH:-NOT FOUND}"
-log_info "  Sonarr config path:   ${SONARR_CONFIG_PATH:-NOT FOUND}"
-log_info "  Prowlarr config path: ${PROWLARR_CONFIG_PATH:-NOT FOUND}"
+log_info "  Resolved slugs:"
+log_info "    Radarr:   ${RADARR_SLUG}"
+log_info "    Sonarr:   ${SONARR_SLUG}"
+log_info "    Prowlarr: ${PROWLARR_SLUG}"
 
-RADARR_API_KEY=$(extract_api_key_from_xml "$RADARR_CONFIG_PATH")
-SONARR_API_KEY=$(extract_api_key_from_xml "$SONARR_CONFIG_PATH")
-PROWLARR_API_KEY=$(extract_api_key_from_xml "$PROWLARR_CONFIG_PATH")
+# Debug: list what is visible in /addon_configs/
+if [ -d "/addon_configs" ]; then
+    log_info "  Directories in /addon_configs/:"
+    ls -1 /addon_configs/ 2>/dev/null | while read -r d; do log_info "    ${d}"; done
+else
+    log_warn "  /addon_configs/ not mounted"
+fi
 
-# Validate we got keys
-[ -z "$RADARR_API_KEY" ]   && log_error "Could not extract Radarr API key. Check supervisor logs."
-[ -z "$SONARR_API_KEY" ]   && log_error "Could not extract Sonarr API key. Check supervisor logs."
-[ -z "$PROWLARR_API_KEY" ] && log_error "Could not extract Prowlarr API key. Check supervisor logs."
+# Read manual API keys from addon options (empty = not set)
+MANUAL_RADARR_KEY=$(jq -r '.radarr_api_key // empty' "$OPTIONS" 2>/dev/null)
+MANUAL_SONARR_KEY=$(jq -r '.sonarr_api_key // empty' "$OPTIONS" 2>/dev/null)
+MANUAL_PROWLARR_KEY=$(jq -r '.prowlarr_api_key // empty' "$OPTIONS" 2>/dev/null)
 
-log_success "  Radarr API key:   ${RADARR_API_KEY:0:8}..."
-log_success "  Sonarr API key:   ${SONARR_API_KEY:0:8}..."
-log_success "  Prowlarr API key: ${PROWLARR_API_KEY:0:8}..."
+log_info "  Extracting Radarr API key..."
+RADARR_API_KEY=$(extract_api_key "Radarr" "$RADARR_URL" "$MANUAL_RADARR_KEY" "$RADARR_SLUG")
+if [ -z "$RADARR_API_KEY" ]; then
+    log_error "Could not extract Radarr API key. Set radarr_api_key in addon Configuration tab."
+fi
+
+log_info "  Extracting Sonarr API key..."
+SONARR_API_KEY=$(extract_api_key "Sonarr" "$SONARR_URL" "$MANUAL_SONARR_KEY" "$SONARR_SLUG")
+if [ -z "$SONARR_API_KEY" ]; then
+    log_error "Could not extract Sonarr API key. Set sonarr_api_key in addon Configuration tab."
+fi
+
+log_info "  Extracting Prowlarr API key..."
+PROWLARR_API_KEY=$(extract_api_key "Prowlarr" "$PROWLARR_URL" "$MANUAL_PROWLARR_KEY" "$PROWLARR_SLUG")
+if [ -z "$PROWLARR_API_KEY" ]; then
+    log_error "Could not extract Prowlarr API key. Set prowlarr_api_key in addon Configuration tab."
+fi
+
+log_success "  All API keys obtained:"
+log_success "    Radarr:   ${RADARR_API_KEY:0:8}..."
+log_success "    Sonarr:   ${SONARR_API_KEY:0:8}..."
+log_success "    Prowlarr: ${PROWLARR_API_KEY:0:8}..."
 
 # ── Step 2: Radarr root folder ───────────────────────────────────
 
@@ -137,6 +256,8 @@ else
   "fields": [
     {"name": "host",                "value": "${HOST}"},
     {"name": "port",                "value": ${QBIT_PORT}},
+    {"name": "useSsl",              "value": false},
+    {"name": "urlBase",             "value": ""},
     {"name": "username",            "value": "${QBIT_USER}"},
     {"name": "password",            "value": "${QBIT_PASS}"},
     {"name": "movieCategory",       "value": "radarr"},
@@ -165,6 +286,8 @@ else
   "fields": [
     {"name": "host",             "value": "${HOST}"},
     {"name": "port",             "value": ${QBIT_PORT}},
+    {"name": "useSsl",           "value": false},
+    {"name": "urlBase",          "value": ""},
     {"name": "username",         "value": "${QBIT_USER}"},
     {"name": "password",         "value": "${QBIT_PASS}"},
     {"name": "tvCategory",       "value": "sonarr"},
@@ -228,15 +351,23 @@ EOF
         && log_success "  Registered." || log_warn "  Failed — check Prowlarr UI"
 fi
 
-# ── Steps 8 & 9: Connection tests ────────────────────────────────
+# ── Steps 8 & 9: Verification ───────────────────────────────────
 
-log_info "[8/9] Testing Radarr → qBittorrent..."
-api_get "${RADARR_URL}/api/v3/downloadclient/test" "$RADARR_API_KEY" > /dev/null \
-    && log_success "  OK" || log_warn "  Inconclusive — verify in Radarr UI"
+log_info "[8/9] Verifying Radarr download client..."
+existing=$(api_get "${RADARR_URL}/api/v3/downloadclient" "$RADARR_API_KEY")
+if echo "$existing" | jq -e '.[] | select(.name == "qBittorrent")' > /dev/null 2>&1; then
+    log_success "  qBittorrent is registered in Radarr"
+else
+    log_warn "  qBittorrent not found in Radarr — check Radarr UI"
+fi
 
-log_info "[9/9] Testing Sonarr → qBittorrent..."
-api_get "${SONARR_URL}/api/v3/downloadclient/test" "$SONARR_API_KEY" > /dev/null \
-    && log_success "  OK" || log_warn "  Inconclusive — verify in Sonarr UI"
+log_info "[9/9] Verifying Sonarr download client..."
+existing=$(api_get "${SONARR_URL}/api/v3/downloadclient" "$SONARR_API_KEY")
+if echo "$existing" | jq -e '.[] | select(.name == "qBittorrent")' > /dev/null 2>&1; then
+    log_success "  qBittorrent is registered in Sonarr"
+else
+    log_warn "  qBittorrent not found in Sonarr — check Sonarr UI"
+fi
 
 echo ""
 log_success "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
