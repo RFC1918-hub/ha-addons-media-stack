@@ -714,11 +714,6 @@ radarr:
       - trash_id: d1d67249d3890e49bc12e275d989a7e9  # HD Bluray + WEB
         reset_unmatched_scores:
           enabled: true
-    custom_format_groups:
-      add:
-        - trash_id: f8bf8eab4617f12dfdbd16303d8da245  # [Required] Golden Rule HD
-          select:
-            - dc98083864ea246d05a42df0d05f81cc  # x265 (HD)
     media_naming:
       folder: jellyfin-imdb
       movie:
@@ -734,11 +729,6 @@ sonarr:
       - trash_id: 72dae194fc92bf828f32cde7744e51a1  # WEB-1080p
         reset_unmatched_scores:
           enabled: true
-    custom_format_groups:
-      add:
-        - trash_id: 158188097a58d7687dee647e04af0da3  # [Required] Golden Rule HD
-          select:
-            - 47435ece6b99a0b477caf360e79ba0bb  # x265 (HD)
     media_naming:
       series: jellyfin-tvdb
       season: default

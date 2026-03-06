@@ -52,7 +52,7 @@ wait_for_service() {
 }
 
 log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-log_info "  Media Stack Configurator v2.4.4"
+log_info "  Media Stack Configurator v2.4.5"
 log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # ── Debug: dump token/env info ───────────────────────────────────
