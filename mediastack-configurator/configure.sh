@@ -59,13 +59,11 @@ already_exists() {
 
 log_info "[1/9] Extracting API keys from service configs..."
 
-# Debug: show what's mounted and available
-log_info "  Scanning /config/addons for config files..."
-find /config 2>/dev/null | grep -i "config.xml" | head -20 || true
-log_info "  Scanning /addon_configs for config files..."
-find /addon_configs 2>/dev/null | grep -i "config.xml" | head -20 || true
-log_info "  Scanning /data for config files..."
-find /data 2>/dev/null | grep -i "config.xml" | head -20 || true
+# Debug: show all mounts and find all config.xml files
+log_info "  === Mounted paths ==="
+ls / 2>/dev/null | tr '\n' ' ' && echo ""
+log_info "  === Searching for config.xml everywhere ==="
+find / -name "config.xml" -not -path "*/proc/*" -not -path "*/sys/*" 2>/dev/null | head -30 || true
 
 find_config() {
     local service="$1"
@@ -90,14 +88,22 @@ extract_api_key() {
     xmlstarlet sel -t -v "//ApiKey" "$config_path" 2>/dev/null
 }
 
-# Try fetching API key from config file first, fall back to API initialize endpoint
+# Fetch API key from the service's initialize.js endpoint (no auth needed)
 fetch_api_key_via_api() {
     local url="$1"
-    # Radarr/Sonarr/Prowlarr all expose /api/v3/initialize.js or /initialize.js
-    # which contains the API key for unauthenticated local access
+    local raw
+    raw=$(curl -sf "${url}/initialize.js" 2>/dev/null || true)
+    log_info "  initialize.js raw response: ${raw:0:200}"
+
+    # Try format: Radarr/Sonarr: window.Radarr = {"apiKey":"..."}
     local key
-    key=$(curl -sf "${url}/initialize.js" 2>/dev/null \
-        | grep -o '"apiKey":"[^"]*"' | cut -d'"' -f4)
+    key=$(echo "$raw" | grep -o '"apiKey":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+    # If that failed try: apiKey: "..."
+    if [ -z "$key" ]; then
+        key=$(echo "$raw" | grep -o "apiKey: *'[^']*'" | head -1 | sed "s/apiKey: *'//;s/'//")
+    fi
+
     echo "$key"
 }
 
