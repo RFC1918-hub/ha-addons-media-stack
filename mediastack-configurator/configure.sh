@@ -16,15 +16,17 @@ log_error()   { echo "[ERROR]   $1"; exit 1; }
 log_warn()    { echo "[WARNING] $1"; }
 
 # ── HTTP helpers ─────────────────────────────────────────────────
+# -L = follow redirects (critical — Alexbelgium builds use URL bases
+#      like /radarr/ causing 307 redirects on the bare port)
 
 api_get() {
     local url="$1" api_key="$2"
-    curl -sf -H "X-Api-Key: ${api_key}" -H "Content-Type: application/json" "${url}"
+    curl -sfL -H "X-Api-Key: ${api_key}" -H "Content-Type: application/json" "${url}"
 }
 
 api_post() {
     local url="$1" api_key="$2" body="$3"
-    curl -sf -X POST \
+    curl -sfL -X POST \
         -H "X-Api-Key: ${api_key}" \
         -H "Content-Type: application/json" \
         -d "${body}" "${url}"
@@ -404,8 +406,8 @@ verify_download_client() {
     local name="$1" url="$2" api_key="$3"
     log_info "  Verifying ${name} download clients..."
     local response http_code body
-    # Use -w to get HTTP status code separately
-    response=$(curl -s -w "\n%{http_code}" \
+    # Use -L to follow redirects, -w to get HTTP status code
+    response=$(curl -sL -w "\n%{http_code}" \
         -H "X-Api-Key: ${api_key}" \
         -H "Content-Type: application/json" \
         "${url}/api/v3/downloadclient" 2>/dev/null || true)
