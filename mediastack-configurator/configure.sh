@@ -487,6 +487,7 @@ register_qbittorrent() {
     PAYLOAD=$(cat <<EOF
 {
   "name": "qBittorrent", "enable": true, "protocol": "torrent", "priority": 1,
+  "removeCompletedDownloads": true,
   "implementation": "QBittorrent", "configContract": "QBittorrentSettings",
   "fields": [
     {"name": "host",          "value": "${QBIT_EXT_HOST}"},
