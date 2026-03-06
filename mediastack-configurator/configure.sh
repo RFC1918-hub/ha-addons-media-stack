@@ -26,10 +26,21 @@ api_get() {
 
 api_post() {
     local url="$1" api_key="$2" body="$3"
-    curl -sfL -X POST \
+    local response http_code resp_body
+    response=$(curl -sL -w "\n%{http_code}" -X POST \
         -H "X-Api-Key: ${api_key}" \
         -H "Content-Type: application/json" \
-        -d "${body}" "${url}"
+        -d "${body}" "${url}" 2>/dev/null || true)
+    http_code=$(echo "$response" | tail -1)
+    resp_body=$(echo "$response" | sed '$d')
+    if [ "$http_code" -ge 200 ] && [ "$http_code" -lt 300 ] 2>/dev/null; then
+        echo "$resp_body"
+        return 0
+    else
+        echo "[api_post] HTTP ${http_code} from ${url}" >&2
+        echo "[api_post] Response: $(echo "$resp_body" | head -c 500)" >&2
+        return 1
+    fi
 }
 
 already_exists() {
