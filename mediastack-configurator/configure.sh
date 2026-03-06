@@ -352,74 +352,61 @@ fi
 
 # ── Steps 4 & 5: Register qBittorrent ───────────────────────────
 #
-# First probe qBittorrent's login API to confirm which credentials work,
-# trying the configured ones then common defaults. This avoids confusing
-# Radarr/Sonarr "Authentication Failure" errors and auto-heals if the
-# Alexbelgium addon is still using default credentials.
+# Alexbelgium's qBittorrent addon runs qBittorrent's WebUI on an internal
+# port (default 8080) but publishes it to host port 8081, while a separate
+# VueTorrent SPA frontend is served at host port 8080. We must auto-detect
+# which host port has the actual /api/v2/ backend.
 
-# Discover qBittorrent URL base — Alexbelgium builds may use /qbittorrent/
-# We probe by POSTing dummy credentials: "Fails." = URL exists, empty = URL wrong.
-QBIT_URL_BASE=""
-# -- Diagnostic: dump HTTP status+body for several qBit API paths so we know
-#    what the server actually returns before guessing the URL base.
-log_info "  [DIAG] qBittorrent raw API probe (no -f, no -L) on port ${QBIT_PORT}:"
-for diag_path in \
-    "/api/v2/app/version" \
-    "/api/v2/auth/login" \
-    "/qbittorrent/api/v2/app/version" \
-    "/qbittorrent/api/v2/auth/login" \
-; do
-    diag_url="http://${LOCAL_HOST}:${QBIT_PORT}${diag_path}"
-    # Use -w to get the HTTP status code appended after body, separated by a BEL char
-    diag_raw=$(curl -s --max-time 5 \
-        -w $'\x07%{http_code}' \
-        -X POST \
-        -H "Content-Type: application/x-www-form-urlencoded" \
-        -d "username=probe&password=probe" \
-        "$diag_url" 2>/dev/null || true)
-    diag_code="${diag_raw##*$'\x07'}"
-    diag_body="${diag_raw%$'\x07'*}"
-    diag_preview="${diag_body:0:80}"
-    log_info "    ${diag_path} → HTTP ${diag_code} body='${diag_preview}'"
+# Auto-detect the real qBittorrent API port: the config port serves the
+# VueTorrent SPA; the API is typically at config_port+1.
+QBIT_API_PORT=""
+# Candidates: QBIT_PORT+1 first (Alexbelgium default), then QBIT_PORT itself,
+# then a few other common ports.
+_qbit_next=$(( QBIT_PORT + 1 ))
+for try_port in "${_qbit_next}" "${QBIT_PORT}" 8081 8082 8090; do
+    _ver=$(curl -s --max-time 5 \
+        "http://${LOCAL_HOST}:${try_port}/api/v2/app/version" 2>/dev/null || true)
+    # Valid response is a short version string like "v5.x.y", not HTML
+    if [ -n "$_ver" ] && [ "${_ver#<}" = "$_ver" ]; then
+        QBIT_API_PORT="$try_port"
+        log_info "  qBittorrent API port detected: ${QBIT_API_PORT} (version: ${_ver})"
+        break
+    fi
+    log_info "  Port ${try_port}: no API response (body preview: '${_ver:0:30}')"
 done
+if [ -z "$QBIT_API_PORT" ]; then
+    log_warn "  Could not auto-detect qBittorrent API port — falling back to ${QBIT_PORT}"
+    QBIT_API_PORT="$QBIT_PORT"
+fi
 
+# URL base detection on the confirmed API port
 QBIT_URL_BASE=""
 for try_base in "" "/qbittorrent" "/downloads" "/qbt"; do
-    probe_raw=$(curl -s --max-time 5 \
-        -w $'\x07%{http_code}' \
+    probe=$(curl -s --max-time 5 \
         -X POST \
         -H "Content-Type: application/x-www-form-urlencoded" \
         -d "username=probe&password=probe" \
-        "http://${LOCAL_HOST}:${QBIT_PORT}${try_base}/api/v2/auth/login" 2>/dev/null || true)
-    probe_code="${probe_raw##*$'\x07'}"
-    probe="${probe_raw%$'\x07'*}"
-    log_info "  URL base '${try_base:-<empty>}' → HTTP ${probe_code} body='${probe:0:40}'"
+        "http://${LOCAL_HOST}:${QBIT_API_PORT}${try_base}/api/v2/auth/login" 2>/dev/null || true)
     if [ "$probe" = "Fails." ] || [ "$probe" = "Ok." ]; then
         QBIT_URL_BASE="$try_base"
-        log_info "  qBittorrent API base detected: '${try_base:-/}' (probe='${probe}')"
+        log_info "  qBittorrent URL base: '${try_base:-<root>}'"
         break
     fi
 done
-if [ -z "$QBIT_URL_BASE" ]; then
-    log_warn "  Could not detect qBittorrent URL base — using root path (probe responses were empty)"
-fi
-QBIT_LOGIN_URL="http://${LOCAL_HOST}:${QBIT_PORT}${QBIT_URL_BASE}/api/v2/auth/login"
+
+QBIT_LOGIN_URL="http://${LOCAL_HOST}:${QBIT_API_PORT}${QBIT_URL_BASE}/api/v2/auth/login"
 log_info "  qBittorrent login URL: ${QBIT_LOGIN_URL}"
 
 qbit_try_login() {
     local user="$1" pass="$2"
-    local raw http_code result
-    raw=$(curl -s --max-time 5 \
-        -w $'\x07%{http_code}' \
+    local result
+    result=$(curl -s --max-time 5 \
         -c /tmp/qbit_cookies.txt \
         -X POST \
         -H "Content-Type: application/x-www-form-urlencoded" \
         -d "username=${user}&password=${pass}" \
         "${QBIT_LOGIN_URL}" 2>/dev/null || true)
-    http_code="${raw##*$'\x07'}"
-    result="${raw%$'\x07'*}"
-    log_info "    → login '${user}':'${pass:+***}' HTTP ${http_code} → '${result:0:40}'"
-    # qBittorrent returns "Ok." on success, "Fails." on failure
+    log_info "    → login '${user}':'${pass:+***}' → '${result:0:40}'"
     [ "$result" = "Ok." ]
 }
 
@@ -502,7 +489,7 @@ register_qbittorrent() {
   "implementation": "QBittorrent", "configContract": "QBittorrentSettings",
   "fields": [
     {"name": "host",          "value": "${QBIT_EXT_HOST}"},
-    {"name": "port",          "value": ${QBIT_PORT}},
+    {"name": "port",          "value": ${QBIT_API_PORT}},
     {"name": "useSsl",        "value": false},
     {"name": "urlBase",       "value": "${QBIT_URL_BASE}"},
     {"name": "username",      "value": "${QBIT_WORKING_USER}"},
