@@ -628,13 +628,13 @@ if [ "$RECYCLARR_ENABLED" = "true" ]; then
         cat > /tmp/recyclarr.yml <<EOF
 radarr:
   movies:
-    base_url: http://127.0.0.1:${RADARR_PORT}
+    base_url: http://${HOST_IP}:${RADARR_PORT}
     api_key: ${RADARR_API_KEY}
     quality_definition:
       type: movie
 sonarr:
   series:
-    base_url: http://127.0.0.1:${SONARR_PORT}
+    base_url: http://${HOST_IP}:${SONARR_PORT}
     api_key: ${SONARR_API_KEY}
     quality_definition:
       type: series
