@@ -3,9 +3,10 @@ description: >
   Automatically wires together Radarr, Sonarr, Prowlarr, qBittorrent and Jellyfin
   after you have installed them via Alexbelgium's addon repository. Run once and it
   connects everything — download clients, indexer apps, and root folders.
-version: "1.2.0"
+version: "1.4.0"
 slug: mediastack-configurator
 init: false
+host_network: true
 arch:
   - aarch64
   - amd64
