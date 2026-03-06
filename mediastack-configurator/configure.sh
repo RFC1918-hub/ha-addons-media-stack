@@ -515,6 +515,44 @@ EOF
     fi
 }
 
+# ── Step 4a: Create qBittorrent categories with correct save paths ─
+# Uses the session cookie established above. createCategory fails with 409
+# if the category already exists; in that case fall back to editCategory.
+QBIT_API_BASE="http://${LOCAL_HOST}:${QBIT_API_PORT}${QBIT_URL_BASE}"
+
+create_qbit_category() {
+    local name="$1" path="$2"
+    local rc
+    rc=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
+        -b /tmp/qbit_cookies.txt \
+        -X POST \
+        -H "Content-Type: application/x-www-form-urlencoded" \
+        -d "category=${name}&savePath=${path}" \
+        "${QBIT_API_BASE}/api/v2/torrents/createCategory" 2>/dev/null || true)
+    if [ "$rc" = "200" ]; then
+        log_success "  Category '${name}' created → ${path}"
+    elif [ "$rc" = "409" ]; then
+        # Already exists — update the save path
+        rc2=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
+            -b /tmp/qbit_cookies.txt \
+            -X POST \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            -d "category=${name}&savePath=${path}" \
+            "${QBIT_API_BASE}/api/v2/torrents/editCategory" 2>/dev/null || true)
+        if [ "$rc2" = "200" ]; then
+            log_success "  Category '${name}' updated → ${path}"
+        else
+            log_warn "  Category '${name}': editCategory returned HTTP ${rc2}"
+        fi
+    else
+        log_warn "  Category '${name}': createCategory returned HTTP ${rc} (auth issue?)"
+    fi
+}
+
+log_info "[4/10] Configuring qBittorrent download categories..."
+create_qbit_category "radarr" "${MOVIES_PATH}"
+create_qbit_category "sonarr" "${TV_PATH}"
+
 log_info "[4/10] Registering qBittorrent in Radarr..."
 register_qbittorrent "Radarr" "$RADARR_URL" "$RADARR_API_KEY" "radarr" "api/v3" "movieCategory"
 
@@ -672,9 +710,10 @@ radarr:
     quality_definition:
       type: movie
     media_naming:
-      folder: default
+      folder: jellyfin-imdb
       movie:
         rename: true
+        standard: jellyfin-imdb
 sonarr:
   series:
     base_url: ${RECYCLARR_SONARR_URL}
@@ -682,7 +721,7 @@ sonarr:
     quality_definition:
       type: series
     media_naming:
-      series: default
+      series: jellyfin-tvdb
       season: default
       episodes:
         rename: true
