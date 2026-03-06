@@ -4,7 +4,7 @@ description: >
   after you have installed them via Alexbelgium's addon repository. Run once and it
   connects everything — download clients, indexer apps, and root folders.
   Also syncs TRaSH Guides quality definitions via Recyclarr.
-version: "2.4.3"
+version: "2.4.4"
 slug: mediastack-configurator
 init: false
 host_network: true

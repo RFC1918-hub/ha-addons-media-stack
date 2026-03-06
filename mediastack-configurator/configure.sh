@@ -710,6 +710,15 @@ radarr:
     api_key: ${RADARR_API_KEY}
     quality_definition:
       type: movie
+    quality_profiles:
+      - trash_id: d1d67249d3890e49bc12e275d989a7e9  # HD Bluray + WEB
+        reset_unmatched_scores:
+          enabled: true
+    custom_format_groups:
+      add:
+        - trash_id: f8bf8eab4617f12dfdbd16303d8da245  # [Required] Golden Rule HD
+          select:
+            - dc98083864ea246d05a42df0d05f81cc  # x265 (HD)
     media_naming:
       folder: jellyfin-imdb
       movie:
@@ -721,6 +730,15 @@ sonarr:
     api_key: ${SONARR_API_KEY}
     quality_definition:
       type: series
+    quality_profiles:
+      - trash_id: 72dae194fc92bf828f32cde7744e51a1  # WEB-1080p
+        reset_unmatched_scores:
+          enabled: true
+    custom_format_groups:
+      add:
+        - trash_id: 158188097a58d7687dee647e04af0da3  # [Required] Golden Rule HD
+          select:
+            - 47435ece6b99a0b477caf360e79ba0bb  # x265 (HD)
     media_naming:
       series: jellyfin-tvdb
       season: default
@@ -730,7 +748,7 @@ sonarr:
         daily: default
         anime: default
 EOF
-            log_info "  Syncing quality definitions and naming scheme from TRaSH Guides..."
+            log_info "  Syncing quality definitions, naming scheme and profiles from TRaSH Guides..."
             if recyclarr sync --config /tmp/recyclarr.yml 2>&1 | \
                     while IFS= read -r line; do log_info "    ${line}"; done; then
                 log_success "  Recyclarr sync completed."
