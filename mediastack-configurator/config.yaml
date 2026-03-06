@@ -3,7 +3,8 @@ description: >
   Automatically wires together Radarr, Sonarr, Prowlarr, qBittorrent and Jellyfin
   after you have installed them via Alexbelgium's addon repository. Run once and it
   connects everything — download clients, indexer apps, and root folders.
-version: "2.2.6"
+  Also syncs TRaSH Guides quality definitions via Recyclarr.
+version: "2.3.0"
 slug: mediastack-configurator
 init: false
 host_network: true
@@ -32,6 +33,7 @@ options:
   movies_path: /media/movies
   tv_path: /media/tv
   service_timeout: 300
+  recyclarr_enabled: true
 schema:
   radarr_port: int
   sonarr_port: int
@@ -43,6 +45,7 @@ schema:
   movies_path: str
   tv_path: str
   service_timeout: int
+  recyclarr_enabled: bool
   radarr_api_key: "str?"
   sonarr_api_key: "str?"
   prowlarr_api_key: "str?"

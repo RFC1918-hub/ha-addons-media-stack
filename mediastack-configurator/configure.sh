@@ -203,7 +203,7 @@ extract_api_key() {
 
 # ── Step 1: Extract API keys ─────────────────────────────────────
 
-log_info "[1/9] Extracting API keys..."
+log_info "[1/10] Extracting API keys..."
 
 # Discover addon slugs via Supervisor API (single call)
 ADDON_LIST=""
@@ -326,7 +326,7 @@ mkdir -p "${TV_PATH}"     && log_info "    ${TV_PATH} — OK"     || log_warn " 
 
 # ── Step 2: Radarr root folder ───────────────────────────────────
 
-log_info "[2/9] Configuring Radarr root folder (${MOVIES_PATH})..."
+log_info "[2/10] Configuring Radarr root folder (${MOVIES_PATH})..."
 existing=$(api_get "${RADARR_URL}/api/v3/rootfolder" "$RADARR_API_KEY")
 if echo "$existing" | jq -e --arg p "$MOVIES_PATH" '.[] | select(.path == $p)' > /dev/null 2>&1; then
     log_warn "  Already set — skipping."
@@ -339,7 +339,7 @@ fi
 
 # ── Step 3: Sonarr root folder ───────────────────────────────────
 
-log_info "[3/9] Configuring Sonarr root folder (${TV_PATH})..."
+log_info "[3/10] Configuring Sonarr root folder (${TV_PATH})..."
 existing=$(api_get "${SONARR_URL}/api/v3/rootfolder" "$SONARR_API_KEY")
 if echo "$existing" | jq -e --arg p "$TV_PATH" '.[] | select(.path == $p)' > /dev/null 2>&1; then
     log_warn "  Already set — skipping."
@@ -423,7 +423,7 @@ if [ -n "$SUPERVISOR_TOKEN" ]; then
     fi
 fi
 
-log_info "[4-5/9] Probing qBittorrent credentials..."
+log_info "[4-5/10] Probing qBittorrent credentials..."
 QBIT_WORKING_USER=""
 QBIT_WORKING_PASS=""
 
@@ -515,15 +515,15 @@ EOF
     fi
 }
 
-log_info "[4/9] Registering qBittorrent in Radarr..."
+log_info "[4/10] Registering qBittorrent in Radarr..."
 register_qbittorrent "Radarr" "$RADARR_URL" "$RADARR_API_KEY" "radarr" "api/v3" "movieCategory"
 
-log_info "[5/9] Registering qBittorrent in Sonarr..."
+log_info "[5/10] Registering qBittorrent in Sonarr..."
 register_qbittorrent "Sonarr" "$SONARR_URL" "$SONARR_API_KEY" "sonarr" "api/v3" "tvCategory"
 
 # ── Step 6: Radarr → Prowlarr ────────────────────────────────────
 
-log_info "[6/9] Registering Radarr in Prowlarr..."
+log_info "[6/10] Registering Radarr in Prowlarr..."
 existing=$(api_get "${PROWLARR_URL}/api/v1/applications" "$PROWLARR_API_KEY")
 if already_exists "$existing" "Radarr"; then
     log_warn "  Already registered — skipping."
@@ -547,7 +547,7 @@ fi
 
 # ── Step 7: Sonarr → Prowlarr ────────────────────────────────────
 
-log_info "[7/9] Registering Sonarr in Prowlarr..."
+log_info "[7/10] Registering Sonarr in Prowlarr..."
 existing=$(api_get "${PROWLARR_URL}/api/v1/applications" "$PROWLARR_API_KEY")
 if already_exists "$existing" "Sonarr"; then
     log_warn "  Already registered — skipping."
@@ -608,11 +608,48 @@ verify_download_client() {
     fi
 }
 
-log_info "[8/9] Verifying Radarr download client..."
+log_info "[8/10] Verifying Radarr download client..."
 verify_download_client "Radarr" "$RADARR_URL" "$RADARR_API_KEY"
 
-log_info "[9/9] Verifying Sonarr download client..."
+log_info "[9/10] Verifying Sonarr download client..."
 verify_download_client "Sonarr" "$SONARR_URL" "$SONARR_API_KEY"
+
+# ── Step 10: Recyclarr — TRaSH Guides quality sync ───────────────
+
+RECYCLARR_ENABLED=$(jq -r '.recyclarr_enabled // true' "$OPTIONS" 2>/dev/null)
+
+if [ "$RECYCLARR_ENABLED" = "true" ]; then
+    log_info "[10/10] Running Recyclarr (TRaSH Guides quality sync)..."
+    if ! command -v recyclarr > /dev/null 2>&1; then
+        log_warn "  Recyclarr binary not found — skipping."
+    else
+        cat > /tmp/recyclarr.yml <<EOF
+radarr:
+  movies:
+    base_url: http://127.0.0.1:${RADARR_PORT}
+    api_key: ${RADARR_API_KEY}
+    quality_definition:
+      type: movie
+sonarr:
+  series:
+    base_url: http://127.0.0.1:${SONARR_PORT}
+    api_key: ${SONARR_API_KEY}
+    quality_definition:
+      type: series
+EOF
+        log_info "  Syncing quality definitions from TRaSH Guides..."
+        if recyclarr sync --config /tmp/recyclarr.yml 2>&1 | \
+                while IFS= read -r line; do log_info "    ${line}"; done; then
+            log_success "  Recyclarr sync completed."
+        else
+            log_warn "  Recyclarr sync encountered issues — check output above."
+            log_warn "  Quality definitions may not be set; configure them manually in Radarr/Sonarr."
+        fi
+        rm -f /tmp/recyclarr.yml
+    fi
+else
+    log_info "[10/10] Recyclarr disabled — skipping."
+fi
 
 echo ""
 log_success "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
