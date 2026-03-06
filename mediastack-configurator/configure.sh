@@ -675,7 +675,6 @@ radarr:
       folder: default
       movie:
         rename: true
-        standard: default
 sonarr:
   series:
     base_url: ${RECYCLARR_SONARR_URL}
