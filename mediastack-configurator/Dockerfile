@@ -11,6 +11,7 @@ RUN apk add --no-cache \
 
 # Install Recyclarr (TRaSH Guides quality sync)
 # Uses musl builds — required for Alpine Linux (musl libc)
+# Extracts ALL files (.NET host + .dll + deps) into /opt/recyclarr/
 # Skipped gracefully on unsupported arches (e.g. i386)
 RUN set -e; \
     case "$(uname -m)" in \
@@ -25,9 +26,11 @@ RUN set -e; \
     curl -fL --retry 3 \
         "https://github.com/recyclarr/recyclarr/releases/download/${RVER}/recyclarr-linux-musl-${RARCH}.tar.xz" \
         -o /tmp/recyclarr.tar.xz; \
-    tar -xJf /tmp/recyclarr.tar.xz -C /usr/local/bin recyclarr; \
+    mkdir -p /opt/recyclarr; \
+    tar -xJf /tmp/recyclarr.tar.xz -C /opt/recyclarr; \
     rm /tmp/recyclarr.tar.xz; \
-    chmod +x /usr/local/bin/recyclarr; \
+    chmod +x /opt/recyclarr/recyclarr; \
+    ln -s /opt/recyclarr/recyclarr /usr/local/bin/recyclarr; \
     recyclarr --version
 
 # Copy scripts
