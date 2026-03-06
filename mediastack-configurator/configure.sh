@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
 
-HOST="127.0.0.1"
+# LOCAL_HOST — used by our curl calls only (we have host_network:true)
+LOCAL_HOST="127.0.0.1"
 OPTIONS="/data/options.json"
 
-RADARR_URL="http://${HOST}:${RADARR_PORT}"
-SONARR_URL="http://${HOST}:${SONARR_PORT}"
-PROWLARR_URL="http://${HOST}:${PROWLARR_PORT}"
-QBIT_URL="http://${HOST}:${QBIT_PORT}"
+RADARR_URL="http://${LOCAL_HOST}:${RADARR_PORT}"
+SONARR_URL="http://${LOCAL_HOST}:${SONARR_PORT}"
+PROWLARR_URL="http://${LOCAL_HOST}:${PROWLARR_PORT}"
+QBIT_URL="http://${LOCAL_HOST}:${QBIT_PORT}"
+
+# HOST_IP is determined later after SUPERVISOR_TOKEN is available.
+# It is used in API *payloads* so that Radarr/Sonarr/Prowlarr (which run
+# in isolated containers WITHOUT host_network) can reach each other via
+# the real host LAN IP rather than 127.0.0.1 (which is their own loopback).
+HOST_IP=""
 
 # ── Logging ──────────────────────────────────────────────────────
 
@@ -240,6 +247,40 @@ log_info "    Radarr:   ${RADARR_SLUG}"
 log_info "    Sonarr:   ${SONARR_SLUG}"
 log_info "    Prowlarr: ${PROWLARR_SLUG}"
 
+# ── Discover host LAN IP for inter-service payloads ──────────────
+# Radarr/Sonarr/Prowlarr/qBittorrent run in isolated Docker containers
+# WITHOUT host_network, so 127.0.0.1 is THEIR OWN loopback — not the host.
+# We must use the host's real LAN IP so they can reach each other.
+
+HOST_IP=$(curl -sf \
+    -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+    "http://supervisor/network/info" 2>/dev/null \
+    | jq -r '(.data.interfaces // [])[] | select(.primary == true) | (.ipv4.address // [])[0]' 2>/dev/null \
+    | cut -d/ -f1)
+
+# Fallback: try hostname -I (works since we have host_network:true)
+if [ -z "$HOST_IP" ]; then
+    HOST_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+fi
+
+# Last resort fallback
+if [ -z "$HOST_IP" ]; then
+    HOST_IP="$LOCAL_HOST"
+    log_warn "  Could not determine host LAN IP — falling back to 127.0.0.1"
+    log_warn "  Inter-service connections (qBittorrent, Prowlarr sync) may fail."
+fi
+
+log_info "  Host LAN IP: ${HOST_IP}"
+
+# Build LAN-IP-based URLs for API payloads.
+# These are used when we tell one service where to find another — since
+# Radarr/Sonarr/Prowlarr/qBittorrent run in isolated containers, they
+# must use the real host IP, not 127.0.0.1.
+RADARR_EXT_URL="http://${HOST_IP}:${RADARR_PORT}"
+SONARR_EXT_URL="http://${HOST_IP}:${SONARR_PORT}"
+PROWLARR_EXT_URL="http://${HOST_IP}:${PROWLARR_PORT}"
+QBIT_EXT_HOST="${HOST_IP}"
+
 # Debug: list what is visible in /addon_configs/
 if [ -d "/addon_configs" ]; then
     log_info "  Directories in /addon_configs/:"
@@ -275,6 +316,13 @@ log_success "  All API keys obtained:"
 log_success "    Radarr:   ${RADARR_API_KEY:0:8}..."
 log_success "    Sonarr:   ${SONARR_API_KEY:0:8}..."
 log_success "    Prowlarr: ${PROWLARR_API_KEY:0:8}..."
+
+# ── Ensure media directories exist ───────────────────────────────
+# Radarr/Sonarr validate the path EXISTS before accepting the root folder.
+# We have media:rw, so we can create them now.
+log_info "  Creating media directories if needed..."
+mkdir -p "${MOVIES_PATH}" && log_info "    ${MOVIES_PATH} — OK" || log_warn "    Could not create ${MOVIES_PATH}"
+mkdir -p "${TV_PATH}"     && log_info "    ${TV_PATH} — OK"     || log_warn "    Could not create ${TV_PATH}"
 
 # ── Step 2: Radarr root folder ───────────────────────────────────
 
@@ -314,7 +362,7 @@ else
   "name": "qBittorrent", "enable": true, "protocol": "torrent", "priority": 1,
   "implementation": "QBittorrent", "configContract": "QBittorrentSettings",
   "fields": [
-    {"name": "host",                "value": "${HOST}"},
+    {"name": "host",                "value": "${QBIT_EXT_HOST}"},
     {"name": "port",                "value": ${QBIT_PORT}},
     {"name": "useSsl",              "value": false},
     {"name": "urlBase",             "value": ""},
@@ -344,7 +392,7 @@ else
   "name": "qBittorrent", "enable": true, "protocol": "torrent", "priority": 1,
   "implementation": "QBittorrent", "configContract": "QBittorrentSettings",
   "fields": [
-    {"name": "host",             "value": "${HOST}"},
+    {"name": "host",             "value": "${QBIT_EXT_HOST}"},
     {"name": "port",             "value": ${QBIT_PORT}},
     {"name": "useSsl",           "value": false},
     {"name": "urlBase",          "value": ""},
@@ -374,8 +422,8 @@ else
   "name": "Radarr", "syncLevel": "addOnly",
   "implementation": "Radarr", "configContract": "RadarrSettings",
   "fields": [
-    {"name": "prowlarrUrl",    "value": "${PROWLARR_URL}"},
-    {"name": "baseUrl",        "value": "${RADARR_URL}"},
+    {"name": "prowlarrUrl",    "value": "${PROWLARR_EXT_URL}"},
+    {"name": "baseUrl",        "value": "${RADARR_EXT_URL}"},
     {"name": "apiKey",         "value": "${RADARR_API_KEY}"},
     {"name": "syncCategories", "value": [2000,2010,2020,2030,2040,2045,2050,2060]}
   ]
@@ -398,8 +446,8 @@ else
   "name": "Sonarr", "syncLevel": "addOnly",
   "implementation": "Sonarr", "configContract": "SonarrSettings",
   "fields": [
-    {"name": "prowlarrUrl",         "value": "${PROWLARR_URL}"},
-    {"name": "baseUrl",             "value": "${SONARR_URL}"},
+    {"name": "prowlarrUrl",         "value": "${PROWLARR_EXT_URL}"},
+    {"name": "baseUrl",             "value": "${SONARR_EXT_URL}"},
     {"name": "apiKey",              "value": "${SONARR_API_KEY}"},
     {"name": "syncCategories",      "value": [5000,5010,5020,5030,5040,5045,5050]},
     {"name": "animeSyncCategories", "value": [5070]}
