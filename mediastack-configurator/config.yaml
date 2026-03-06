@@ -3,7 +3,7 @@ description: >
   Automatically wires together Radarr, Sonarr, Prowlarr, qBittorrent and Jellyfin
   after you have installed them via Alexbelgium's addon repository. Run once and it
   connects everything — download clients, indexer apps, and root folders.
-version: "1.7.0"
+version: "1.8.0"
 slug: mediastack-configurator
 init: false
 host_network: true
@@ -21,24 +21,29 @@ map:
   - config:ro
 options:
   radarr_port: 7878
+  radarr_api_key: ""
   sonarr_port: 8989
+  sonarr_api_key: ""
   prowlarr_port: 9696
+  prowlarr_api_key: ""
   qbittorrent_port: 8080
-  jellyfin_port: 8096
   qbittorrent_username: admin
   qbittorrent_password: ""
+  jellyfin_port: 8096
   movies_path: /media/movies
   tv_path: /media/tv
   service_timeout: 300
 schema:
   radarr_port: int
+  radarr_api_key: str
   sonarr_port: int
+  sonarr_api_key: str
   prowlarr_port: int
+  prowlarr_api_key: str
   qbittorrent_port: int
-  jellyfin_port: int
   qbittorrent_username: str
   qbittorrent_password: password
+  jellyfin_port: int
   movies_path: str
   tv_path: str
   service_timeout: int
-
