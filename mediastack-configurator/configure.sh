@@ -625,29 +625,61 @@ if [ "$RECYCLARR_ENABLED" = "true" ]; then
     elif ! recyclarr --version > /dev/null 2>&1; then
         log_warn "  Recyclarr installed but cannot execute (missing runtime?) — skipping."
     else
-        cat > /tmp/recyclarr.yml <<EOF
+        # Probe which URL Recyclarr can actually reach for Radarr
+        # (curl follows redirects; .NET HttpClient may not, and IPv6/loopback
+        #  can behave differently between curl and .NET)
+        RECYCLARR_RADARR_URL=""
+        RECYCLARR_SONARR_URL=""
+        for try_host in "${LOCAL_HOST}" "${HOST_IP}"; do
+            probe=$(curl -sf --max-time 5 \
+                -H "X-Api-Key: ${RADARR_API_KEY}" \
+                "http://${try_host}:${RADARR_PORT}/api/v3/system/status" 2>/dev/null || true)
+            if echo "$probe" | jq -e '.appName' > /dev/null 2>&1; then
+                RECYCLARR_RADARR_URL="http://${try_host}:${RADARR_PORT}"
+                log_info "  Recyclarr Radarr URL: ${RECYCLARR_RADARR_URL}"
+                break
+            fi
+            log_info "  Radarr not reachable at ${try_host}:${RADARR_PORT} via API — trying next"
+        done
+        for try_host in "${LOCAL_HOST}" "${HOST_IP}"; do
+            probe=$(curl -sf --max-time 5 \
+                -H "X-Api-Key: ${SONARR_API_KEY}" \
+                "http://${try_host}:${SONARR_PORT}/api/v3/system/status" 2>/dev/null || true)
+            if echo "$probe" | jq -e '.appName' > /dev/null 2>&1; then
+                RECYCLARR_SONARR_URL="http://${try_host}:${SONARR_PORT}"
+                log_info "  Recyclarr Sonarr URL: ${RECYCLARR_SONARR_URL}"
+                break
+            fi
+            log_info "  Sonarr not reachable at ${try_host}:${SONARR_PORT} via API — trying next"
+        done
+
+        if [ -z "$RECYCLARR_RADARR_URL" ] || [ -z "$RECYCLARR_SONARR_URL" ]; then
+            log_warn "  Could not determine reachable URL for Radarr/Sonarr — skipping Recyclarr."
+        else
+            cat > /tmp/recyclarr.yml <<EOF
 radarr:
   movies:
-    base_url: http://${HOST_IP}:${RADARR_PORT}
+    base_url: ${RECYCLARR_RADARR_URL}
     api_key: ${RADARR_API_KEY}
     quality_definition:
       type: movie
 sonarr:
   series:
-    base_url: http://${HOST_IP}:${SONARR_PORT}
+    base_url: ${RECYCLARR_SONARR_URL}
     api_key: ${SONARR_API_KEY}
     quality_definition:
       type: series
 EOF
-        log_info "  Syncing quality definitions from TRaSH Guides..."
-        if recyclarr sync --config /tmp/recyclarr.yml 2>&1 | \
-                while IFS= read -r line; do log_info "    ${line}"; done; then
-            log_success "  Recyclarr sync completed."
-        else
-            log_warn "  Recyclarr sync encountered issues — check output above."
-            log_warn "  Quality definitions may not be set; configure them manually in Radarr/Sonarr."
+            log_info "  Syncing quality definitions from TRaSH Guides..."
+            if recyclarr sync --config /tmp/recyclarr.yml 2>&1 | \
+                    while IFS= read -r line; do log_info "    ${line}"; done; then
+                log_success "  Recyclarr sync completed."
+            else
+                log_warn "  Recyclarr sync encountered issues — check output above."
+                log_warn "  Quality definitions may not be set; configure them manually in Radarr/Sonarr."
+            fi
+            rm -f /tmp/recyclarr.yml
         fi
-        rm -f /tmp/recyclarr.yml
     fi
 else
     log_info "[10/10] Recyclarr disabled — skipping."
