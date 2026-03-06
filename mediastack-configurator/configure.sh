@@ -1,17 +1,5 @@
 #!/usr/bin/env bash
-set -e
-
-# ─────────────────────────────────────────────────────────────────
-# Media Stack Configurator — configure.sh
-#
-# Wires together:
-#   - qBittorrent → Radarr  (download client)
-#   - qBittorrent → Sonarr  (download client)
-#   - Radarr      → Prowlarr (application sync)
-#   - Sonarr      → Prowlarr (application sync)
-#   - /media/movies → Radarr root folder
-#   - /media/tv     → Sonarr root folder
-# ─────────────────────────────────────────────────────────────────
+# No set -e so we can handle errors ourselves
 
 HOST="127.0.0.1"
 
@@ -20,308 +8,204 @@ SONARR_URL="http://${HOST}:${SONARR_PORT}"
 PROWLARR_URL="http://${HOST}:${PROWLARR_PORT}"
 QBIT_URL="http://${HOST}:${QBIT_PORT}"
 
-# ── Helpers ───────────────────────────────────────────────────────
-
-log_info()    { echo "[INFO]   "    "$1"; }
-log_success() { echo "[OK]     "   "$1"; }
-log_error()   { echo "[ERROR]  "   "$1"; exit 1; }
-log_warn()    { echo "[WARN]   " "$1"; }
+log_info()    { echo "[INFO]    $1"; }
+log_success() { echo "[OK]      $1"; }
+log_error()   { echo "[ERROR]   $1"; exit 1; }
+log_warn()    { echo "[WARNING] $1"; }
 
 api_get() {
-    local url="$1"
-    local api_key="$2"
-    curl -sf \
-        -H "X-Api-Key: ${api_key}" \
-        -H "Content-Type: application/json" \
-        "${url}"
+    local url="$1" api_key="$2"
+    curl -sf -H "X-Api-Key: ${api_key}" -H "Content-Type: application/json" "${url}"
 }
 
 api_post() {
-    local url="$1"
-    local api_key="$2"
-    local body="$3"
-    curl -sf \
-        -X POST \
-        -H "X-Api-Key: ${api_key}" \
-        -H "Content-Type: application/json" \
-        -d "${body}" \
-        "${url}"
+    local url="$1" api_key="$2" body="$3"
+    curl -sf -X POST -H "X-Api-Key: ${api_key}" -H "Content-Type: application/json" -d "${body}" "${url}"
 }
 
 already_exists() {
-    # Returns 0 (true) if $2 is found in JSON array field 'name' from $1
-    local json="$1"
-    local name="$2"
-    echo "$json" | jq -e --arg n "$name" '.[] | select(.name == $n)' > /dev/null 2>&1
+    echo "$1" | jq -e --arg n "$2" '.[] | select(.name == $n)' > /dev/null 2>&1
 }
 
-# ── Step 1: Extract API Keys ─────────────────────────────────────
+# ── Step 1: Get API keys via initialize.js ───────────────────────
 
-log_info "[1/9] Extracting API keys from service configs..."
+log_info "[1/9] Fetching API keys via initialize.js..."
 
-# Debug: show all mounts and find all config.xml files
-log_info "  === Mounted paths ==="
-ls / 2>/dev/null | tr '\n' ' ' && echo ""
-log_info "  === Searching for config.xml everywhere ==="
-find / -name "config.xml" -not -path "*/proc/*" -not -path "*/sys/*" 2>/dev/null | head -30 || true
+get_api_key() {
+    local name="$1" url="$2"
+    local raw key
 
-find_config() {
-    local service="$1"
-    local config_file
-    # Try multiple possible base paths
-    for base in /addon_configs /config/addons /data/addon_configs; do
-        config_file=$(find "$base" -name "config.xml" 2>/dev/null \
-            | grep -i "${service}" | head -n 1)
-        if [ -n "$config_file" ]; then
-            echo "$config_file"
-            return 0
-        fi
-    done
-    echo ""
-}
+    raw=$(curl -sf --max-time 5 "${url}/initialize.js" 2>/dev/null)
+    log_info "  ${name} initialize.js: ${raw:0:300}"
 
-extract_api_key() {
-    local config_path="$1"
-    if [ -z "$config_path" ] || [ ! -f "$config_path" ]; then
-        return 1
-    fi
-    xmlstarlet sel -t -v "//ApiKey" "$config_path" 2>/dev/null
-}
+    # Try double-quote JSON style: "apiKey":"abc123"
+    key=$(echo "$raw" | grep -o '"apiKey":"[^"]*"' | head -1 | sed 's/"apiKey":"//;s/"//')
 
-# Fetch API key from the service's initialize.js endpoint (no auth needed)
-fetch_api_key_via_api() {
-    local url="$1"
-    local raw
-    raw=$(curl -sf "${url}/initialize.js" 2>/dev/null || true)
-    log_info "  initialize.js raw response: ${raw:0:200}"
-
-    # Try format: Radarr/Sonarr: window.Radarr = {"apiKey":"..."}
-    local key
-    key=$(echo "$raw" | grep -o '"apiKey":"[^"]*"' | head -1 | cut -d'"' -f4)
-
-    # If that failed try: apiKey: "..."
+    # Try single-quote JS style: apiKey: 'abc123'
     if [ -z "$key" ]; then
-        key=$(echo "$raw" | grep -o "apiKey: *'[^']*'" | head -1 | sed "s/apiKey: *'//;s/'//")
+        key=$(echo "$raw" | grep -oP "apiKey:\s*'[^']+'" | head -1 | grep -oP "'[^']+'" | tr -d "'")
     fi
 
+    # Try unquoted: apiKey: abc123
+    if [ -z "$key" ]; then
+        key=$(echo "$raw" | grep -oP 'apiKey:\s*\K[a-f0-9]{32}' | head -1)
+    fi
+
+    if [ -z "$key" ]; then
+        log_warn "  Could not extract API key for ${name} from initialize.js"
+        log_warn "  Full response was: ${raw}"
+    else
+        log_success "  ${name} API key: ${key:0:8}..."
+    fi
     echo "$key"
 }
 
-RADARR_CONFIG=$(find_config "radarr")
-SONARR_CONFIG=$(find_config "sonarr")
-PROWLARR_CONFIG=$(find_config "prowlarr")
+RADARR_API_KEY=$(get_api_key "Radarr" "$RADARR_URL")
+SONARR_API_KEY=$(get_api_key "Sonarr" "$SONARR_URL")
+PROWLARR_API_KEY=$(get_api_key "Prowlarr" "$PROWLARR_URL")
 
-log_info "  Radarr config path:   ${RADARR_CONFIG:-NOT FOUND}"
-log_info "  Sonarr config path:   ${SONARR_CONFIG:-NOT FOUND}"
-log_info "  Prowlarr config path: ${PROWLARR_CONFIG:-NOT FOUND}"
+[ -z "$RADARR_API_KEY" ]   && log_error "Failed to get Radarr API key. Check logs above."
+[ -z "$SONARR_API_KEY" ]   && log_error "Failed to get Sonarr API key. Check logs above."
+[ -z "$PROWLARR_API_KEY" ] && log_error "Failed to get Prowlarr API key. Check logs above."
 
-RADARR_API_KEY=$(extract_api_key "$RADARR_CONFIG")
-if [ -z "$RADARR_API_KEY" ]; then
-    log_warn "  config.xml not found for Radarr, trying API endpoint..."
-    RADARR_API_KEY=$(fetch_api_key_via_api "${RADARR_URL}")
-fi
-[ -z "$RADARR_API_KEY" ] && log_error "Could not get Radarr API key. Is the Radarr addon running?"
-
-SONARR_API_KEY=$(extract_api_key "$SONARR_CONFIG")
-if [ -z "$SONARR_API_KEY" ]; then
-    log_warn "  config.xml not found for Sonarr, trying API endpoint..."
-    SONARR_API_KEY=$(fetch_api_key_via_api "${SONARR_URL}")
-fi
-[ -z "$SONARR_API_KEY" ] && log_error "Could not get Sonarr API key. Is the Sonarr addon running?"
-
-PROWLARR_API_KEY=$(extract_api_key "$PROWLARR_CONFIG")
-if [ -z "$PROWLARR_API_KEY" ]; then
-    log_warn "  config.xml not found for Prowlarr, trying API endpoint..."
-    PROWLARR_API_KEY=$(fetch_api_key_via_api "${PROWLARR_URL}")
-fi
-[ -z "$PROWLARR_API_KEY" ] && log_error "Could not get Prowlarr API key. Is the Prowlarr addon running?"
-
-log_success "  Radarr API key:   ${RADARR_API_KEY:0:8}..."
-log_success "  Sonarr API key:   ${SONARR_API_KEY:0:8}..."
-log_success "  Prowlarr API key: ${PROWLARR_API_KEY:0:8}..."
-
-# ── Step 2: Set Radarr Root Folder ───────────────────────────────
+# ── Step 2: Radarr root folder ───────────────────────────────────
 
 log_info "[2/9] Configuring Radarr root folder (${MOVIES_PATH})..."
-
-existing_radarr_folders=$(api_get "${RADARR_URL}/api/v3/rootfolder" "$RADARR_API_KEY")
-
-if echo "$existing_radarr_folders" | jq -e --arg p "$MOVIES_PATH" '.[] | select(.path == $p)' > /dev/null 2>&1; then
-    log_warn "  Radarr root folder already set — skipping."
+existing=$(api_get "${RADARR_URL}/api/v3/rootfolder" "$RADARR_API_KEY")
+if echo "$existing" | jq -e --arg p "$MOVIES_PATH" '.[] | select(.path == $p)' > /dev/null 2>&1; then
+    log_warn "  Already set — skipping."
 else
-    api_post "${RADARR_URL}/api/v3/rootfolder" "$RADARR_API_KEY" \
-        "{\"path\": \"${MOVIES_PATH}\"}" > /dev/null
-    log_success "  Radarr root folder set to ${MOVIES_PATH}"
+    api_post "${RADARR_URL}/api/v3/rootfolder" "$RADARR_API_KEY" "{\"path\":\"${MOVIES_PATH}\"}" > /dev/null \
+        && log_success "  Set to ${MOVIES_PATH}" \
+        || log_warn "  Failed to set root folder — check Radarr UI"
 fi
 
-# ── Step 3: Set Sonarr Root Folder ───────────────────────────────
+# ── Step 3: Sonarr root folder ───────────────────────────────────
 
 log_info "[3/9] Configuring Sonarr root folder (${TV_PATH})..."
-
-existing_sonarr_folders=$(api_get "${SONARR_URL}/api/v3/rootfolder" "$SONARR_API_KEY")
-
-if echo "$existing_sonarr_folders" | jq -e --arg p "$TV_PATH" '.[] | select(.path == $p)' > /dev/null 2>&1; then
-    log_warn "  Sonarr root folder already set — skipping."
+existing=$(api_get "${SONARR_URL}/api/v3/rootfolder" "$SONARR_API_KEY")
+if echo "$existing" | jq -e --arg p "$TV_PATH" '.[] | select(.path == $p)' > /dev/null 2>&1; then
+    log_warn "  Already set — skipping."
 else
-    api_post "${SONARR_URL}/api/v3/rootfolder" "$SONARR_API_KEY" \
-        "{\"path\": \"${TV_PATH}\"}" > /dev/null
-    log_success "  Sonarr root folder set to ${TV_PATH}"
+    api_post "${SONARR_URL}/api/v3/rootfolder" "$SONARR_API_KEY" "{\"path\":\"${TV_PATH}\"}" > /dev/null \
+        && log_success "  Set to ${TV_PATH}" \
+        || log_warn "  Failed to set root folder — check Sonarr UI"
 fi
 
-# ── Step 4: Register qBittorrent in Radarr ───────────────────────
+# ── Step 4: qBittorrent → Radarr ────────────────────────────────
 
-log_info "[4/9] Registering qBittorrent as download client in Radarr..."
-
-existing_radarr_clients=$(api_get "${RADARR_URL}/api/v3/downloadclient" "$RADARR_API_KEY")
-
-if already_exists "$existing_radarr_clients" "qBittorrent"; then
-    log_warn "  qBittorrent already registered in Radarr — skipping."
+log_info "[4/9] Registering qBittorrent in Radarr..."
+existing=$(api_get "${RADARR_URL}/api/v3/downloadclient" "$RADARR_API_KEY")
+if already_exists "$existing" "qBittorrent"; then
+    log_warn "  Already registered — skipping."
 else
-    QBIT_RADARR_PAYLOAD=$(cat <<EOF
-{
-  "name": "qBittorrent",
-  "enable": true,
-  "protocol": "torrent",
-  "priority": 1,
-  "implementation": "QBittorrent",
-  "configContract": "QBittorrentSettings",
-  "fields": [
-    {"name": "host",     "value": "${HOST}"},
-    {"name": "port",     "value": ${QBIT_PORT}},
-    {"name": "username", "value": "${QBIT_USER}"},
-    {"name": "password", "value": "${QBIT_PASS}"},
-    {"name": "tvCategory",    "value": "radarr"},
-    {"name": "recentTvPriority",  "value": 0},
-    {"name": "olderTvPriority",   "value": 0},
-    {"name": "initialState",      "value": 0}
-  ]
-}
+    PAYLOAD=$(cat <<EOF
+{"name":"qBittorrent","enable":true,"protocol":"torrent","priority":1,
+"implementation":"QBittorrent","configContract":"QBittorrentSettings",
+"fields":[
+  {"name":"host","value":"${HOST}"},
+  {"name":"port","value":${QBIT_PORT}},
+  {"name":"username","value":"${QBIT_USER}"},
+  {"name":"password","value":"${QBIT_PASS}"},
+  {"name":"movieCategory","value":"radarr"},
+  {"name":"recentMoviePriority","value":0},
+  {"name":"olderMoviePriority","value":0},
+  {"name":"initialState","value":0}
+]}
 EOF
 )
-    api_post "${RADARR_URL}/api/v3/downloadclient" "$RADARR_API_KEY" "$QBIT_RADARR_PAYLOAD" > /dev/null
-    log_success "  qBittorrent registered in Radarr."
+    api_post "${RADARR_URL}/api/v3/downloadclient" "$RADARR_API_KEY" "$PAYLOAD" > /dev/null \
+        && log_success "  Registered." || log_warn "  Failed — check Radarr UI"
 fi
 
-# ── Step 5: Register qBittorrent in Sonarr ───────────────────────
+# ── Step 5: qBittorrent → Sonarr ────────────────────────────────
 
-log_info "[5/9] Registering qBittorrent as download client in Sonarr..."
-
-existing_sonarr_clients=$(api_get "${SONARR_URL}/api/v3/downloadclient" "$SONARR_API_KEY")
-
-if already_exists "$existing_sonarr_clients" "qBittorrent"; then
-    log_warn "  qBittorrent already registered in Sonarr — skipping."
+log_info "[5/9] Registering qBittorrent in Sonarr..."
+existing=$(api_get "${SONARR_URL}/api/v3/downloadclient" "$SONARR_API_KEY")
+if already_exists "$existing" "qBittorrent"; then
+    log_warn "  Already registered — skipping."
 else
-    QBIT_SONARR_PAYLOAD=$(cat <<EOF
-{
-  "name": "qBittorrent",
-  "enable": true,
-  "protocol": "torrent",
-  "priority": 1,
-  "implementation": "QBittorrent",
-  "configContract": "QBittorrentSettings",
-  "fields": [
-    {"name": "host",     "value": "${HOST}"},
-    {"name": "port",     "value": ${QBIT_PORT}},
-    {"name": "username", "value": "${QBIT_USER}"},
-    {"name": "password", "value": "${QBIT_PASS}"},
-    {"name": "tvCategory",    "value": "sonarr"},
-    {"name": "recentTvPriority",  "value": 0},
-    {"name": "olderTvPriority",   "value": 0},
-    {"name": "initialState",      "value": 0}
-  ]
-}
+    PAYLOAD=$(cat <<EOF
+{"name":"qBittorrent","enable":true,"protocol":"torrent","priority":1,
+"implementation":"QBittorrent","configContract":"QBittorrentSettings",
+"fields":[
+  {"name":"host","value":"${HOST}"},
+  {"name":"port","value":${QBIT_PORT}},
+  {"name":"username","value":"${QBIT_USER}"},
+  {"name":"password","value":"${QBIT_PASS}"},
+  {"name":"tvCategory","value":"sonarr"},
+  {"name":"recentTvPriority","value":0},
+  {"name":"olderTvPriority","value":0},
+  {"name":"initialState","value":0}
+]}
 EOF
 )
-    api_post "${SONARR_URL}/api/v3/downloadclient" "$SONARR_API_KEY" "$QBIT_SONARR_PAYLOAD" > /dev/null
-    log_success "  qBittorrent registered in Sonarr."
+    api_post "${SONARR_URL}/api/v3/downloadclient" "$SONARR_API_KEY" "$PAYLOAD" > /dev/null \
+        && log_success "  Registered." || log_warn "  Failed — check Sonarr UI"
 fi
 
-# ── Step 6: Register Radarr in Prowlarr ──────────────────────────
+# ── Step 6: Radarr → Prowlarr ────────────────────────────────────
 
-log_info "[6/9] Registering Radarr as an application in Prowlarr..."
-
-existing_prowlarr_apps=$(api_get "${PROWLARR_URL}/api/v1/applications" "$PROWLARR_API_KEY")
-
-if already_exists "$existing_prowlarr_apps" "Radarr"; then
-    log_warn "  Radarr already registered in Prowlarr — skipping."
+log_info "[6/9] Registering Radarr in Prowlarr..."
+existing=$(api_get "${PROWLARR_URL}/api/v1/applications" "$PROWLARR_API_KEY")
+if already_exists "$existing" "Radarr"; then
+    log_warn "  Already registered — skipping."
 else
-    RADARR_APP_PAYLOAD=$(cat <<EOF
-{
-  "name": "Radarr",
-  "syncLevel": "addOnly",
-  "implementation": "Radarr",
-  "configContract": "RadarrSettings",
-  "fields": [
-    {"name": "prowlarrUrl", "value": "${PROWLARR_URL}"},
-    {"name": "baseUrl",     "value": "${RADARR_URL}"},
-    {"name": "apiKey",      "value": "${RADARR_API_KEY}"},
-    {"name": "syncCategories", "value": [2000, 2010, 2020, 2030, 2040, 2045, 2050, 2060]}
-  ]
-}
+    PAYLOAD=$(cat <<EOF
+{"name":"Radarr","syncLevel":"addOnly","implementation":"Radarr",
+"configContract":"RadarrSettings","fields":[
+  {"name":"prowlarrUrl","value":"${PROWLARR_URL}"},
+  {"name":"baseUrl","value":"${RADARR_URL}"},
+  {"name":"apiKey","value":"${RADARR_API_KEY}"},
+  {"name":"syncCategories","value":[2000,2010,2020,2030,2040,2045,2050,2060]}
+]}
 EOF
 )
-    api_post "${PROWLARR_URL}/api/v1/applications" "$PROWLARR_API_KEY" "$RADARR_APP_PAYLOAD" > /dev/null
-    log_success "  Radarr registered in Prowlarr."
+    api_post "${PROWLARR_URL}/api/v1/applications" "$PROWLARR_API_KEY" "$PAYLOAD" > /dev/null \
+        && log_success "  Registered." || log_warn "  Failed — check Prowlarr UI"
 fi
 
-# ── Step 7: Register Sonarr in Prowlarr ──────────────────────────
+# ── Step 7: Sonarr → Prowlarr ────────────────────────────────────
 
-log_info "[7/9] Registering Sonarr as an application in Prowlarr..."
-
-if already_exists "$existing_prowlarr_apps" "Sonarr"; then
-    log_warn "  Sonarr already registered in Prowlarr — skipping."
+log_info "[7/9] Registering Sonarr in Prowlarr..."
+existing=$(api_get "${PROWLARR_URL}/api/v1/applications" "$PROWLARR_API_KEY")
+if already_exists "$existing" "Sonarr"; then
+    log_warn "  Already registered — skipping."
 else
-    SONARR_APP_PAYLOAD=$(cat <<EOF
-{
-  "name": "Sonarr",
-  "syncLevel": "addOnly",
-  "implementation": "Sonarr",
-  "configContract": "SonarrSettings",
-  "fields": [
-    {"name": "prowlarrUrl", "value": "${PROWLARR_URL}"},
-    {"name": "baseUrl",     "value": "${SONARR_URL}"},
-    {"name": "apiKey",      "value": "${SONARR_API_KEY}"},
-    {"name": "syncCategories",       "value": [5000, 5010, 5020, 5030, 5040, 5045, 5050]},
-    {"name": "animeSyncCategories",  "value": [5070]}
-  ]
-}
+    PAYLOAD=$(cat <<EOF
+{"name":"Sonarr","syncLevel":"addOnly","implementation":"Sonarr",
+"configContract":"SonarrSettings","fields":[
+  {"name":"prowlarrUrl","value":"${PROWLARR_URL}"},
+  {"name":"baseUrl","value":"${SONARR_URL}"},
+  {"name":"apiKey","value":"${SONARR_API_KEY}"},
+  {"name":"syncCategories","value":[5000,5010,5020,5030,5040,5045,5050]},
+  {"name":"animeSyncCategories","value":[5070]}
+]}
 EOF
 )
-    api_post "${PROWLARR_URL}/api/v1/applications" "$PROWLARR_API_KEY" "$SONARR_APP_PAYLOAD" > /dev/null
-    log_success "  Sonarr registered in Prowlarr."
+    api_post "${PROWLARR_URL}/api/v1/applications" "$PROWLARR_API_KEY" "$PAYLOAD" > /dev/null \
+        && log_success "  Registered." || log_warn "  Failed — check Prowlarr UI"
 fi
 
-# ── Step 8: Verify Radarr can see qBittorrent ────────────────────
+# ── Step 8 & 9: Connection tests ────────────────────────────────
 
-log_info "[8/9] Testing Radarr → qBittorrent connection..."
+log_info "[8/9] Testing Radarr download client..."
+api_get "${RADARR_URL}/api/v3/downloadclient/test" "$RADARR_API_KEY" > /dev/null \
+    && log_success "  Radarr → qBittorrent OK" || log_warn "  Test failed — check Radarr UI"
 
-TEST_RESULT=$(api_get "${RADARR_URL}/api/v3/downloadclient/test" "$RADARR_API_KEY" 2>/dev/null || echo "[]")
-if echo "$TEST_RESULT" | jq -e '.[] | select(.isValid == false)' > /dev/null 2>&1; then
-    log_warn "  Radarr download client test returned warnings — check Radarr UI."
-else
-    log_success "  Radarr → qBittorrent connection looks good."
-fi
+log_info "[9/9] Testing Sonarr download client..."
+api_get "${SONARR_URL}/api/v3/downloadclient/test" "$SONARR_API_KEY" > /dev/null \
+    && log_success "  Sonarr → qBittorrent OK" || log_warn "  Test failed — check Sonarr UI"
 
-# ── Step 9: Verify Sonarr can see qBittorrent ────────────────────
+# ── Summary ──────────────────────────────────────────────────────
 
-log_info "[9/9] Testing Sonarr → qBittorrent connection..."
-
-TEST_RESULT=$(api_get "${SONARR_URL}/api/v3/downloadclient/test" "$SONARR_API_KEY" 2>/dev/null || echo "[]")
-if echo "$TEST_RESULT" | jq -e '.[] | select(.isValid == false)' > /dev/null 2>&1; then
-    log_warn "  Sonarr download client test returned warnings — check Sonarr UI."
-else
-    log_success "  Sonarr → qBittorrent connection looks good."
-fi
-
-# ── Done ──────────────────────────────────────────────────────────
-
-log_success ""
-log_success "Configuration complete! Summary:"
+echo ""
+log_success "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+log_success "Configuration complete!"
 log_success "  ✓ Radarr root folder  → ${MOVIES_PATH}"
 log_success "  ✓ Sonarr root folder  → ${TV_PATH}"
-log_success "  ✓ qBittorrent wired   → Radarr + Sonarr"
-log_success "  ✓ Radarr synced       → Prowlarr"
-log_success "  ✓ Sonarr synced       → Prowlarr"
-log_success ""
-log_success "Next step: Open Prowlarr and add your indexers."
-log_success "They will automatically sync to Radarr and Sonarr."
+log_success "  ✓ qBittorrent         → Radarr + Sonarr"
+log_success "  ✓ Radarr + Sonarr     → Prowlarr"
+log_success "Next: Open Prowlarr and add your indexers."
+log_success "They will sync automatically to Radarr and Sonarr."
+log_success "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
