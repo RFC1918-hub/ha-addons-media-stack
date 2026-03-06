@@ -18,12 +18,17 @@ RUN apk add --no-cache \
     libgcc \
     icu-libs
 
-# Copy Recyclarr from the official image (includes .NET runtime + all deps)
-COPY --from=recyclarr /app /opt/recyclarr
+# Copy the .NET runtime from the Recyclarr image (it's based on dotnet/runtime:10.0-alpine)
+COPY --from=recyclarr /usr/share/dotnet /usr/share/dotnet
+
+# Copy Recyclarr app from the official image (binary + managed DLLs live at /app/recyclarr/)
+COPY --from=recyclarr /app/recyclarr /opt/recyclarr
 RUN ln -s /opt/recyclarr/recyclarr /usr/local/bin/recyclarr
 
-# .NET needs ICU or this flag to run without it
-ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false
+# .NET runtime configuration
+ENV DOTNET_ROOT=/usr/share/dotnet \
+    DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false \
+    COMPlus_EnableDiagnostics=0
 
 # Copy scripts
 COPY run.sh /run.sh
