@@ -17,12 +17,14 @@ RUN set -e; \
         armv7l|armv6l) RARCH="arm"   ;; \
         *) echo "Unsupported arch for Recyclarr: $(uname -m) — skipping" && exit 0 ;; \
     esac; \
-    RVER=$(curl -sfL "https://api.github.com/repos/recyclarr/recyclarr/releases/latest" \
+    RVER=$(curl -fsSL "https://api.github.com/repos/recyclarr/recyclarr/releases/latest" \
         | jq -r .tag_name); \
     echo "Downloading Recyclarr ${RVER} for ${RARCH}..."; \
-    curl -sfL \
+    curl -fL --retry 3 \
         "https://github.com/recyclarr/recyclarr/releases/download/${RVER}/recyclarr-linux-${RARCH}.tar.gz" \
-        | tar -xz -C /usr/local/bin recyclarr; \
+        -o /tmp/recyclarr.tar.gz; \
+    tar -xzf /tmp/recyclarr.tar.gz -C /usr/local/bin recyclarr; \
+    rm /tmp/recyclarr.tar.gz; \
     chmod +x /usr/local/bin/recyclarr; \
     recyclarr --version
 
