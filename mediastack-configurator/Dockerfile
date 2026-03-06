@@ -6,9 +6,11 @@ RUN apk add --no-cache \
     bash \
     curl \
     xmlstarlet \
-    jq
+    jq \
+    xz
 
 # Install Recyclarr (TRaSH Guides quality sync)
+# Uses musl builds — required for Alpine Linux (musl libc)
 # Skipped gracefully on unsupported arches (e.g. i386)
 RUN set -e; \
     case "$(uname -m)" in \
@@ -19,12 +21,12 @@ RUN set -e; \
     esac; \
     RVER=$(curl -fsSL "https://api.github.com/repos/recyclarr/recyclarr/releases/latest" \
         | jq -r .tag_name); \
-    echo "Downloading Recyclarr ${RVER} for ${RARCH}..."; \
+    echo "Downloading Recyclarr ${RVER} musl/${RARCH}..."; \
     curl -fL --retry 3 \
-        "https://github.com/recyclarr/recyclarr/releases/download/${RVER}/recyclarr-linux-${RARCH}.tar.gz" \
-        -o /tmp/recyclarr.tar.gz; \
-    tar -xzf /tmp/recyclarr.tar.gz -C /usr/local/bin recyclarr; \
-    rm /tmp/recyclarr.tar.gz; \
+        "https://github.com/recyclarr/recyclarr/releases/download/${RVER}/recyclarr-linux-musl-${RARCH}.tar.xz" \
+        -o /tmp/recyclarr.tar.xz; \
+    tar -xJf /tmp/recyclarr.tar.xz -C /usr/local/bin recyclarr; \
+    rm /tmp/recyclarr.tar.xz; \
     chmod +x /usr/local/bin/recyclarr; \
     recyclarr --version
 
