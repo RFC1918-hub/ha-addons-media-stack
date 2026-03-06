@@ -360,11 +360,40 @@ fi
 # Discover qBittorrent URL base — Alexbelgium builds may use /qbittorrent/
 # We probe by POSTing dummy credentials: "Fails." = URL exists, empty = URL wrong.
 QBIT_URL_BASE=""
-for try_base in "" "/qbittorrent" "/downloads" "/qbt"; do
-    probe=$(curl -s --max-time 5 \
+# -- Diagnostic: dump HTTP status+body for several qBit API paths so we know
+#    what the server actually returns before guessing the URL base.
+log_info "  [DIAG] qBittorrent raw API probe (no -f, no -L) on port ${QBIT_PORT}:"
+for diag_path in \
+    "/api/v2/app/version" \
+    "/api/v2/auth/login" \
+    "/qbittorrent/api/v2/app/version" \
+    "/qbittorrent/api/v2/auth/login" \
+; do
+    diag_url="http://${LOCAL_HOST}:${QBIT_PORT}${diag_path}"
+    # Use -w to get the HTTP status code appended after body, separated by a BEL char
+    diag_raw=$(curl -s --max-time 5 \
+        -w $'\x07%{http_code}' \
         -X POST \
+        -H "Content-Type: application/x-www-form-urlencoded" \
+        -d "username=probe&password=probe" \
+        "$diag_url" 2>/dev/null || true)
+    diag_code="${diag_raw##*$'\x07'}"
+    diag_body="${diag_raw%$'\x07'*}"
+    diag_preview="${diag_body:0:80}"
+    log_info "    ${diag_path} → HTTP ${diag_code} body='${diag_preview}'"
+done
+
+QBIT_URL_BASE=""
+for try_base in "" "/qbittorrent" "/downloads" "/qbt"; do
+    probe_raw=$(curl -s --max-time 5 \
+        -w $'\x07%{http_code}' \
+        -X POST \
+        -H "Content-Type: application/x-www-form-urlencoded" \
         -d "username=probe&password=probe" \
         "http://${LOCAL_HOST}:${QBIT_PORT}${try_base}/api/v2/auth/login" 2>/dev/null || true)
+    probe_code="${probe_raw##*$'\x07'}"
+    probe="${probe_raw%$'\x07'*}"
+    log_info "  URL base '${try_base:-<empty>}' → HTTP ${probe_code} body='${probe:0:40}'"
     if [ "$probe" = "Fails." ] || [ "$probe" = "Ok." ]; then
         QBIT_URL_BASE="$try_base"
         log_info "  qBittorrent API base detected: '${try_base:-/}' (probe='${probe}')"
@@ -379,13 +408,17 @@ log_info "  qBittorrent login URL: ${QBIT_LOGIN_URL}"
 
 qbit_try_login() {
     local user="$1" pass="$2"
-    local result
-    result=$(curl -sf --max-time 5 \
+    local raw http_code result
+    raw=$(curl -s --max-time 5 \
+        -w $'\x07%{http_code}' \
         -c /tmp/qbit_cookies.txt \
         -X POST \
+        -H "Content-Type: application/x-www-form-urlencoded" \
         -d "username=${user}&password=${pass}" \
         "${QBIT_LOGIN_URL}" 2>/dev/null || true)
-    log_info "    → login '${user}':'${pass:+***}' → '${result}'"
+    http_code="${raw##*$'\x07'}"
+    result="${raw%$'\x07'*}"
+    log_info "    → login '${user}':'${pass:+***}' HTTP ${http_code} → '${result:0:40}'"
     # qBittorrent returns "Ok." on success, "Fails." on failure
     [ "$result" = "Ok." ]
 }
