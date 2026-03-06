@@ -357,44 +357,81 @@ fi
 # Radarr/Sonarr "Authentication Failure" errors and auto-heals if the
 # Alexbelgium addon is still using default credentials.
 
+# trying the configured ones then common defaults. This avoids confusing
+# Radarr/Sonarr "Authentication Failure" errors and auto-heals if the
+# Alexbelgium addon is still using default credentials.
+
+# Discover qBittorrent URL base — Alexbelgium builds may use /qbittorrent/
+# We probe by POSTing dummy credentials: "Fails." = URL exists, empty = URL wrong.
+QBIT_URL_BASE=""
+for try_base in "" "/qbittorrent" "/downloads" "/qbt"; do
+    probe=$(curl -sL --max-time 5 \
+        -X POST \
+        -d "username=probe&password=probe" \
+        "http://${LOCAL_HOST}:${QBIT_PORT}${try_base}/api/v2/auth/login" 2>/dev/null || true)
+    if [ "$probe" = "Fails." ] || [ "$probe" = "Ok." ]; then
+        QBIT_URL_BASE="$try_base"
+        log_info "  qBittorrent API base detected: '${try_base:-/}' (probe='${probe}')"
+        break
+    fi
+done
+if [ -z "$QBIT_URL_BASE" ]; then
+    log_warn "  Could not detect qBittorrent URL base — using root path (probe responses were empty)"
+fi
+QBIT_LOGIN_URL="http://${LOCAL_HOST}:${QBIT_PORT}${QBIT_URL_BASE}/api/v2/auth/login"
+log_info "  qBittorrent login URL: ${QBIT_LOGIN_URL}"
+
 qbit_try_login() {
     local user="$1" pass="$2"
     local result
-    result=$(curl -sf --max-time 5 \
+    result=$(curl -sfL --max-time 5 \
         -c /tmp/qbit_cookies.txt \
         -X POST \
         -d "username=${user}&password=${pass}" \
-        "http://${LOCAL_HOST}:${QBIT_PORT}/api/v2/auth/login" 2>/dev/null || true)
+        "${QBIT_LOGIN_URL}" 2>/dev/null || true)
+    log_info "    → login '${user}':'${pass:+***}' → '${result}'"
     # qBittorrent returns "Ok." on success, "Fails." on failure
     [ "$result" = "Ok." ]
 }
+
+# Also try to read the password from the Alexbelgium addon's own options
+QBIT_SLUG="${ALEX_PREFIX}_qbittorrent"
+QBIT_ADDON_PASS=""
+if [ -n "$SUPERVISOR_TOKEN" ]; then
+    QBIT_ADDON_PASS=$(curl -sf \
+        -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+        "http://supervisor/addons/${QBIT_SLUG}/info" 2>/dev/null \
+        | jq -r '.data.options.password // .data.options.WebUiPassword // .data.options.webui_password // empty' 2>/dev/null || true)
+    if [ -n "$QBIT_ADDON_PASS" ]; then
+        log_info "  Found password in qBittorrent addon options via Supervisor API"
+    fi
+fi
 
 log_info "[4-5/9] Probing qBittorrent credentials..."
 QBIT_WORKING_USER=""
 QBIT_WORKING_PASS=""
 
-# Try configured credentials first
-if qbit_try_login "$QBIT_USER" "$QBIT_PASS"; then
-    log_success "  Configured credentials work (user: ${QBIT_USER})"
-    QBIT_WORKING_USER="$QBIT_USER"
-    QBIT_WORKING_PASS="$QBIT_PASS"
-else
-    log_warn "  Configured credentials failed (user: ${QBIT_USER}). Trying defaults..."
-    # Common defaults for fresh qBittorrent installs
-    declare -a TRY_USERS=("admin" "admin" "admin" "")
-    declare -a TRY_PASSES=("adminadmin" "admin" "" "")
-    for i in 0 1 2 3; do
-        u="${TRY_USERS[$i]}"
-        p="${TRY_PASSES[$i]}"
-        if qbit_try_login "$u" "$p"; then
-            log_success "  Found working credentials — user: '${u}' password: '${p:-<empty>}'"
-            log_warn "  Update qbittorrent_username/qbittorrent_password in addon config to save these."
-            QBIT_WORKING_USER="$u"
-            QBIT_WORKING_PASS="$p"
-            break
-        fi
-    done
+# Build candidate list: Supervisor-sourced password first, then configured, then defaults
+declare -a TRY_USERS=()
+declare -a TRY_PASSES=()
+if [ -n "$QBIT_ADDON_PASS" ]; then
+    TRY_USERS+=("admin")
+    TRY_PASSES+=("$QBIT_ADDON_PASS")
 fi
+TRY_USERS+=("$QBIT_USER"  "admin"       "admin" "admin" "")
+TRY_PASSES+=("$QBIT_PASS" "adminadmin"  "admin" ""      "")
+
+for i in "${!TRY_USERS[@]}"; do
+    u="${TRY_USERS[$i]}"
+    p="${TRY_PASSES[$i]}"
+    if qbit_try_login "$u" "$p"; then
+        log_success "  Working credentials found — user: '${u}'"
+        [ -n "$p" ] || log_success "  (empty password / auth may be disabled)"
+        QBIT_WORKING_USER="$u"
+        QBIT_WORKING_PASS="$p"
+        break
+    fi
+done
 
 if [ -z "$QBIT_WORKING_USER" ] && [ -z "$QBIT_WORKING_PASS" ]; then
     # Final check: maybe auth is disabled (any login returns Ok.)
@@ -438,7 +475,7 @@ register_qbittorrent() {
     {"name": "host",          "value": "${QBIT_EXT_HOST}"},
     {"name": "port",          "value": ${QBIT_PORT}},
     {"name": "useSsl",        "value": false},
-    {"name": "urlBase",       "value": ""},
+    {"name": "urlBase",       "value": "${QBIT_URL_BASE}"},
     {"name": "username",      "value": "${QBIT_WORKING_USER}"},
     {"name": "password",      "value": "${QBIT_WORKING_PASS}"},
     {"name": "${cat_field}",  "value": "${category}"},
