@@ -15,6 +15,7 @@ export QBIT_USER=$(jq -r '.qbittorrent_username' "$OPTIONS")
 export QBIT_PASS=$(jq -r '.qbittorrent_password' "$OPTIONS")
 export MOVIES_PATH=$(jq -r '.movies_path'        "$OPTIONS")
 export TV_PATH=$(jq -r '.tv_path'                "$OPTIONS")
+export DOWNLOADS_PATH=$(jq -r '.downloads_path'  "$OPTIONS")
 
 # SUPERVISOR_TOKEN is injected automatically by HA when hassio_api: true.
 # Try multiple known locations — the env var may be named differently
@@ -51,7 +52,7 @@ wait_for_service() {
 }
 
 log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-log_info "  Media Stack Configurator v2.4.2"
+log_info "  Media Stack Configurator v2.4.3"
 log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # ── Debug: dump token/env info ───────────────────────────────────

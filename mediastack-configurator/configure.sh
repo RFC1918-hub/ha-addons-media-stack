@@ -321,9 +321,10 @@ log_success "    Prowlarr: ${PROWLARR_API_KEY:0:8}..."
 # Radarr/Sonarr validate the path EXISTS before accepting the root folder.
 # We have media:rw, so we can create them now.
 log_info "  Creating media directories if needed..."
-mkdir -p "${MOVIES_PATH}" && log_info "    ${MOVIES_PATH} — OK" || log_warn "    Could not create ${MOVIES_PATH}"
-mkdir -p "${TV_PATH}"     && log_info "    ${TV_PATH} — OK"     || log_warn "    Could not create ${TV_PATH}"
-
+mkdir -p "${MOVIES_PATH}"              && log_info "    ${MOVIES_PATH} — OK"              || log_warn "    Could not create ${MOVIES_PATH}"
+mkdir -p "${TV_PATH}"                  && log_info "    ${TV_PATH} — OK"                  || log_warn "    Could not create ${TV_PATH}"
+mkdir -p "${DOWNLOADS_PATH}/radarr"   && log_info "    ${DOWNLOADS_PATH}/radarr — OK"   || log_warn "    Could not create ${DOWNLOADS_PATH}/radarr"
+mkdir -p "${DOWNLOADS_PATH}/sonarr"   && log_info "    ${DOWNLOADS_PATH}/sonarr — OK"   || log_warn "    Could not create ${DOWNLOADS_PATH}/sonarr"
 # ── Step 2: Radarr root folder ───────────────────────────────────
 
 log_info "[2/10] Configuring Radarr root folder (${MOVIES_PATH})..."
@@ -550,8 +551,8 @@ create_qbit_category() {
 }
 
 log_info "[4/10] Configuring qBittorrent download categories..."
-create_qbit_category "radarr" "${MOVIES_PATH}"
-create_qbit_category "sonarr" "${TV_PATH}"
+create_qbit_category "radarr" "${DOWNLOADS_PATH}/radarr"
+create_qbit_category "sonarr" "${DOWNLOADS_PATH}/sonarr"
 
 log_info "[4/10] Registering qBittorrent in Radarr..."
 register_qbittorrent "Radarr" "$RADARR_URL" "$RADARR_API_KEY" "radarr" "api/v3" "movieCategory"

@@ -4,7 +4,7 @@ description: >
   after you have installed them via Alexbelgium's addon repository. Run once and it
   connects everything — download clients, indexer apps, and root folders.
   Also syncs TRaSH Guides quality definitions via Recyclarr.
-version: "2.4.2"
+version: "2.4.3"
 slug: mediastack-configurator
 init: false
 host_network: true
@@ -32,6 +32,7 @@ options:
   jellyfin_port: 8096
   movies_path: /media/movies
   tv_path: /media/tv
+  downloads_path: /media/downloads
   service_timeout: 300
   recyclarr_enabled: true
 schema:
@@ -44,6 +45,7 @@ schema:
   jellyfin_port: int
   movies_path: str
   tv_path: str
+  downloads_path: str
   service_timeout: int
   recyclarr_enabled: bool
   radarr_api_key: "str?"
