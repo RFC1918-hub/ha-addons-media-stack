@@ -16,7 +16,8 @@ RUN apk add --no-cache \
     jq \
     libstdc++ \
     libgcc \
-    icu-libs
+    icu-libs \
+    git
 
 # Copy the .NET runtime from the Recyclarr image (it's based on dotnet/runtime:10.0-alpine)
 COPY --from=recyclarr /usr/share/dotnet /usr/share/dotnet
