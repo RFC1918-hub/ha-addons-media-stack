@@ -352,9 +352,66 @@ fi
 
 # ── Steps 4 & 5: Register qBittorrent ───────────────────────────
 #
-# Radarr/Sonarr TEST the qBittorrent login when registering the client.
-# The credentials must exactly match qBittorrent's web UI settings.
-# In the Alexbelgium qBittorrent addon: Configuration tab → WebUI Password.
+# First probe qBittorrent's login API to confirm which credentials work,
+# trying the configured ones then common defaults. This avoids confusing
+# Radarr/Sonarr "Authentication Failure" errors and auto-heals if the
+# Alexbelgium addon is still using default credentials.
+
+qbit_try_login() {
+    local user="$1" pass="$2"
+    local result
+    result=$(curl -sf --max-time 5 \
+        -c /tmp/qbit_cookies.txt \
+        -X POST \
+        -d "username=${user}&password=${pass}" \
+        "http://${LOCAL_HOST}:${QBIT_PORT}/api/v2/auth/login" 2>/dev/null || true)
+    # qBittorrent returns "Ok." on success, "Fails." on failure
+    [ "$result" = "Ok." ]
+}
+
+log_info "[4-5/9] Probing qBittorrent credentials..."
+QBIT_WORKING_USER=""
+QBIT_WORKING_PASS=""
+
+# Try configured credentials first
+if qbit_try_login "$QBIT_USER" "$QBIT_PASS"; then
+    log_success "  Configured credentials work (user: ${QBIT_USER})"
+    QBIT_WORKING_USER="$QBIT_USER"
+    QBIT_WORKING_PASS="$QBIT_PASS"
+else
+    log_warn "  Configured credentials failed (user: ${QBIT_USER}). Trying defaults..."
+    # Common defaults for fresh qBittorrent installs
+    declare -a TRY_USERS=("admin" "admin" "admin" "")
+    declare -a TRY_PASSES=("adminadmin" "admin" "" "")
+    for i in 0 1 2 3; do
+        u="${TRY_USERS[$i]}"
+        p="${TRY_PASSES[$i]}"
+        if qbit_try_login "$u" "$p"; then
+            log_success "  Found working credentials — user: '${u}' password: '${p:-<empty>}'"
+            log_warn "  Update qbittorrent_username/qbittorrent_password in addon config to save these."
+            QBIT_WORKING_USER="$u"
+            QBIT_WORKING_PASS="$p"
+            break
+        fi
+    done
+fi
+
+if [ -z "$QBIT_WORKING_USER" ] && [ -z "$QBIT_WORKING_PASS" ]; then
+    # Final check: maybe auth is disabled (any login returns Ok.)
+    if qbit_try_login "wronguser" "wrongpass"; then
+        log_success "  qBittorrent auth is disabled — no credentials needed"
+        QBIT_WORKING_USER="$QBIT_USER"
+        QBIT_WORKING_PASS=""
+    else
+        log_warn "  Could not authenticate to qBittorrent with any known credentials."
+        log_warn "  ► Open qBittorrent web UI → Tools → Options → Web UI"
+        log_warn "    Either disable authentication, or note the password and set"
+        log_warn "    qbittorrent_password in THIS addon's Configuration tab."
+        log_warn "  Continuing — registration will fail until credentials are fixed."
+        QBIT_WORKING_USER="$QBIT_USER"
+        QBIT_WORKING_PASS="$QBIT_PASS"
+    fi
+fi
 
 register_qbittorrent() {
     local arr_name="$1"
@@ -382,8 +439,8 @@ register_qbittorrent() {
     {"name": "port",          "value": ${QBIT_PORT}},
     {"name": "useSsl",        "value": false},
     {"name": "urlBase",       "value": ""},
-    {"name": "username",      "value": "${QBIT_USER}"},
-    {"name": "password",      "value": "${QBIT_PASS}"},
+    {"name": "username",      "value": "${QBIT_WORKING_USER}"},
+    {"name": "password",      "value": "${QBIT_WORKING_PASS}"},
     {"name": "${cat_field}",  "value": "${category}"},
     {"name": "initialState",  "value": 0}
   ]
