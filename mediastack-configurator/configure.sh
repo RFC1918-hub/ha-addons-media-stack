@@ -400,24 +400,56 @@ fi
 
 # ── Steps 8 & 9: Verification ───────────────────────────────────
 
+verify_download_client() {
+    local name="$1" url="$2" api_key="$3"
+    log_info "  Verifying ${name} download clients..."
+    local response http_code body
+    # Use -w to get HTTP status code separately
+    response=$(curl -s -w "\n%{http_code}" \
+        -H "X-Api-Key: ${api_key}" \
+        -H "Content-Type: application/json" \
+        "${url}/api/v3/downloadclient" 2>/dev/null || true)
+    http_code=$(echo "$response" | tail -1)
+    body=$(echo "$response" | sed '$d')
+    log_info "    HTTP ${http_code} — ${#body} bytes"
+    if [ -z "$body" ]; then
+        log_warn "    Empty response from ${name}"
+        return 1
+    fi
+    # Check if response is valid JSON array
+    if ! echo "$body" | jq -e 'type == "array"' > /dev/null 2>&1; then
+        log_warn "    Response is not a JSON array: $(echo "$body" | head -c 200)"
+        return 1
+    fi
+    local count
+    count=$(echo "$body" | jq 'length')
+    log_info "    ${count} download client(s) registered"
+    if echo "$body" | jq -e '.[] | select(.name == "qBittorrent")' > /dev/null 2>&1; then
+        log_success "  qBittorrent is registered in ${name}"
+        return 0
+    else
+        # Show what names ARE there
+        local names
+        names=$(echo "$body" | jq -r '.[].name' 2>/dev/null | tr '\n' ', ')
+        log_warn "  qBittorrent not found — registered names: ${names:-none}"
+        return 1
+    fi
+}
+
 log_info "[8/9] Verifying Radarr download client..."
-existing=$(api_get "${RADARR_URL}/api/v3/downloadclient" "$RADARR_API_KEY")
-if echo "$existing" | jq -e '.[] | select(.name == "qBittorrent")' > /dev/null 2>&1; then
-    log_success "  qBittorrent is registered in Radarr"
-else
-    log_warn "  qBittorrent not found in Radarr — check Radarr UI"
-fi
+verify_download_client "Radarr" "$RADARR_URL" "$RADARR_API_KEY"
 
 log_info "[9/9] Verifying Sonarr download client..."
-existing=$(api_get "${SONARR_URL}/api/v3/downloadclient" "$SONARR_API_KEY")
-if echo "$existing" | jq -e '.[] | select(.name == "qBittorrent")' > /dev/null 2>&1; then
-    log_success "  qBittorrent is registered in Sonarr"
-else
-    log_warn "  qBittorrent not found in Sonarr — check Sonarr UI"
-fi
+verify_download_client "Sonarr" "$SONARR_URL" "$SONARR_API_KEY"
 
 echo ""
 log_success "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-log_success "Done! Open Prowlarr and add your indexers."
-log_success "They will sync to Radarr and Sonarr automatically."
+log_success "Configuration complete!"
 log_success "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+log_info ""
+log_info "Next steps:"
+log_info "  1. Open Prowlarr → Indexers → Add your indexers"
+log_info "     They will auto-sync to Radarr and Sonarr."
+log_info "  2. Open Radarr → Add movies (they download via qBittorrent)"
+log_info "  3. Open Sonarr → Add TV shows"
+log_info "  4. Open Jellyfin → Add library pointing to /media/movies and /media/tv"
