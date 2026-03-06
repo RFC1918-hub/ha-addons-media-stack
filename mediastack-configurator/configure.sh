@@ -19,41 +19,83 @@ api_get() {
 
 api_post() {
     local url="$1" api_key="$2" body="$3"
-    curl -sf -X POST -H "X-Api-Key: ${api_key}" -H "Content-Type: application/json" -d "${body}" "${url}"
+    curl -sf -X POST \
+        -H "X-Api-Key: ${api_key}" \
+        -H "Content-Type: application/json" \
+        -d "${body}" "${url}"
 }
 
 already_exists() {
     echo "$1" | jq -e --arg n "$2" '.[] | select(.name == $n)' > /dev/null 2>&1
 }
 
-# ── Step 1: Validate API keys ────────────────────────────────────
+# ── Step 1: Auto-extract API keys ────────────────────────────────
 
-log_info "[1/9] Validating API keys..."
+log_info "[1/9] Auto-extracting API keys via Supervisor API..."
 
-test_api_key() {
-    local name="$1" url="$2" key="$3"
-    local result
-    result=$(curl -sf -H "X-Api-Key: ${key}" "${url}/api/v3/system/status" 2>/dev/null)
-    if [ -z "$result" ]; then
-        log_error "${name} API key rejected or service not responding. Check the key in your addon config."
-    fi
-    log_success "  ${name} API key valid."
+# The Supervisor token is injected as an env var by HA
+SUPERVISOR_TOKEN="${SUPERVISOR_TOKEN:-}"
+if [ -z "$SUPERVISOR_TOKEN" ]; then
+    log_error "SUPERVISOR_TOKEN not available. Make sure hassio_api: true is set in config.yaml"
+fi
+
+# List all installed addons to find the right slugs
+ADDONS=$(curl -sf \
+    -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+    "http://supervisor/addons" 2>/dev/null)
+
+log_info "  Installed addons:"
+echo "$ADDONS" | jq -r '.data.addons[] | "\(.slug) - \(.name)"' 2>/dev/null || log_warn "  Could not list addons"
+
+# Find slugs dynamically by name match
+RADARR_SLUG=$(echo "$ADDONS"   | jq -r '.data.addons[] | select(.name | test("(?i)radarr"))   | .slug' | head -1)
+SONARR_SLUG=$(echo "$ADDONS"   | jq -r '.data.addons[] | select(.name | test("(?i)sonarr"))   | .slug' | head -1)
+PROWLARR_SLUG=$(echo "$ADDONS" | jq -r '.data.addons[] | select(.name | test("(?i)prowlarr")) | .slug' | head -1)
+
+log_info "  Radarr slug:   ${RADARR_SLUG:-NOT FOUND}"
+log_info "  Sonarr slug:   ${SONARR_SLUG:-NOT FOUND}"
+log_info "  Prowlarr slug: ${PROWLARR_SLUG:-NOT FOUND}"
+
+# Get config path for each addon via Supervisor API
+get_addon_config_path() {
+    local slug="$1"
+    curl -sf \
+        -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+        "http://supervisor/addons/${slug}/info" 2>/dev/null \
+        | jq -r '.data.config_path // empty'
 }
 
-# Prowlarr uses v1
-test_prowlarr_key() {
-    local key="$1"
-    local result
-    result=$(curl -sf -H "X-Api-Key: ${key}" "${PROWLARR_URL}/api/v1/system/status" 2>/dev/null)
-    if [ -z "$result" ]; then
-        log_error "Prowlarr API key rejected. Check the key in your addon config."
+extract_api_key_from_xml() {
+    local config_path="$1"
+    local xml_file="${config_path}/config.xml"
+    if [ ! -f "$xml_file" ]; then
+        # Try one level deeper — some addons use a subdir
+        xml_file=$(find "$config_path" -name "config.xml" 2>/dev/null | head -1)
     fi
-    log_success "  Prowlarr API key valid."
+    [ -z "$xml_file" ] && return 1
+    xmlstarlet sel -t -v "//ApiKey" "$xml_file" 2>/dev/null
 }
 
-test_api_key "Radarr"   "$RADARR_URL"   "$RADARR_API_KEY"
-test_api_key "Sonarr"   "$SONARR_URL"   "$SONARR_API_KEY"
-test_prowlarr_key "$PROWLARR_API_KEY"
+RADARR_CONFIG_PATH=$(get_addon_config_path "$RADARR_SLUG")
+SONARR_CONFIG_PATH=$(get_addon_config_path "$SONARR_SLUG")
+PROWLARR_CONFIG_PATH=$(get_addon_config_path "$PROWLARR_SLUG")
+
+log_info "  Radarr config path:   ${RADARR_CONFIG_PATH:-NOT FOUND}"
+log_info "  Sonarr config path:   ${SONARR_CONFIG_PATH:-NOT FOUND}"
+log_info "  Prowlarr config path: ${PROWLARR_CONFIG_PATH:-NOT FOUND}"
+
+RADARR_API_KEY=$(extract_api_key_from_xml "$RADARR_CONFIG_PATH")
+SONARR_API_KEY=$(extract_api_key_from_xml "$SONARR_CONFIG_PATH")
+PROWLARR_API_KEY=$(extract_api_key_from_xml "$PROWLARR_CONFIG_PATH")
+
+# Validate we got keys
+[ -z "$RADARR_API_KEY" ]   && log_error "Could not extract Radarr API key. Check supervisor logs."
+[ -z "$SONARR_API_KEY" ]   && log_error "Could not extract Sonarr API key. Check supervisor logs."
+[ -z "$PROWLARR_API_KEY" ] && log_error "Could not extract Prowlarr API key. Check supervisor logs."
+
+log_success "  Radarr API key:   ${RADARR_API_KEY:0:8}..."
+log_success "  Sonarr API key:   ${SONARR_API_KEY:0:8}..."
+log_success "  Prowlarr API key: ${PROWLARR_API_KEY:0:8}..."
 
 # ── Step 2: Radarr root folder ───────────────────────────────────
 
@@ -90,12 +132,8 @@ if already_exists "$existing" "qBittorrent"; then
 else
     PAYLOAD=$(cat <<EOF
 {
-  "name": "qBittorrent",
-  "enable": true,
-  "protocol": "torrent",
-  "priority": 1,
-  "implementation": "QBittorrent",
-  "configContract": "QBittorrentSettings",
+  "name": "qBittorrent", "enable": true, "protocol": "torrent", "priority": 1,
+  "implementation": "QBittorrent", "configContract": "QBittorrentSettings",
   "fields": [
     {"name": "host",                "value": "${HOST}"},
     {"name": "port",                "value": ${QBIT_PORT}},
@@ -122,12 +160,8 @@ if already_exists "$existing" "qBittorrent"; then
 else
     PAYLOAD=$(cat <<EOF
 {
-  "name": "qBittorrent",
-  "enable": true,
-  "protocol": "torrent",
-  "priority": 1,
-  "implementation": "QBittorrent",
-  "configContract": "QBittorrentSettings",
+  "name": "qBittorrent", "enable": true, "protocol": "torrent", "priority": 1,
+  "implementation": "QBittorrent", "configContract": "QBittorrentSettings",
   "fields": [
     {"name": "host",             "value": "${HOST}"},
     {"name": "port",             "value": ${QBIT_PORT}},
@@ -154,15 +188,13 @@ if already_exists "$existing" "Radarr"; then
 else
     PAYLOAD=$(cat <<EOF
 {
-  "name": "Radarr",
-  "syncLevel": "addOnly",
-  "implementation": "Radarr",
-  "configContract": "RadarrSettings",
+  "name": "Radarr", "syncLevel": "addOnly",
+  "implementation": "Radarr", "configContract": "RadarrSettings",
   "fields": [
-    {"name": "prowlarrUrl",     "value": "${PROWLARR_URL}"},
-    {"name": "baseUrl",         "value": "${RADARR_URL}"},
-    {"name": "apiKey",          "value": "${RADARR_API_KEY}"},
-    {"name": "syncCategories",  "value": [2000,2010,2020,2030,2040,2045,2050,2060]}
+    {"name": "prowlarrUrl",    "value": "${PROWLARR_URL}"},
+    {"name": "baseUrl",        "value": "${RADARR_URL}"},
+    {"name": "apiKey",         "value": "${RADARR_API_KEY}"},
+    {"name": "syncCategories", "value": [2000,2010,2020,2030,2040,2045,2050,2060]}
   ]
 }
 EOF
@@ -180,16 +212,14 @@ if already_exists "$existing" "Sonarr"; then
 else
     PAYLOAD=$(cat <<EOF
 {
-  "name": "Sonarr",
-  "syncLevel": "addOnly",
-  "implementation": "Sonarr",
-  "configContract": "SonarrSettings",
+  "name": "Sonarr", "syncLevel": "addOnly",
+  "implementation": "Sonarr", "configContract": "SonarrSettings",
   "fields": [
-    {"name": "prowlarrUrl",          "value": "${PROWLARR_URL}"},
-    {"name": "baseUrl",              "value": "${SONARR_URL}"},
-    {"name": "apiKey",               "value": "${SONARR_API_KEY}"},
-    {"name": "syncCategories",       "value": [5000,5010,5020,5030,5040,5045,5050]},
-    {"name": "animeSyncCategories",  "value": [5070]}
+    {"name": "prowlarrUrl",         "value": "${PROWLARR_URL}"},
+    {"name": "baseUrl",             "value": "${SONARR_URL}"},
+    {"name": "apiKey",              "value": "${SONARR_API_KEY}"},
+    {"name": "syncCategories",      "value": [5000,5010,5020,5030,5040,5045,5050]},
+    {"name": "animeSyncCategories", "value": [5070]}
   ]
 }
 EOF
@@ -198,25 +228,18 @@ EOF
         && log_success "  Registered." || log_warn "  Failed — check Prowlarr UI"
 fi
 
-# ── Step 8 & 9: Connection tests ─────────────────────────────────
+# ── Steps 8 & 9: Connection tests ────────────────────────────────
 
 log_info "[8/9] Testing Radarr → qBittorrent..."
 api_get "${RADARR_URL}/api/v3/downloadclient/test" "$RADARR_API_KEY" > /dev/null \
-    && log_success "  OK" || log_warn "  Test inconclusive — verify in Radarr UI"
+    && log_success "  OK" || log_warn "  Inconclusive — verify in Radarr UI"
 
 log_info "[9/9] Testing Sonarr → qBittorrent..."
 api_get "${SONARR_URL}/api/v3/downloadclient/test" "$SONARR_API_KEY" > /dev/null \
-    && log_success "  OK" || log_warn "  Test inconclusive — verify in Sonarr UI"
-
-# ── Summary ──────────────────────────────────────────────────────
+    && log_success "  OK" || log_warn "  Inconclusive — verify in Sonarr UI"
 
 echo ""
 log_success "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-log_success "Configuration complete!"
-log_success "  ✓ Radarr root folder  → ${MOVIES_PATH}"
-log_success "  ✓ Sonarr root folder  → ${TV_PATH}"
-log_success "  ✓ qBittorrent         → Radarr + Sonarr"
-log_success "  ✓ Radarr + Sonarr     → Prowlarr"
-log_success "Next: Open Prowlarr and add your indexers."
-log_success "They will sync automatically to Radarr and Sonarr."
+log_success "Done! Open Prowlarr and add your indexers."
+log_success "They will sync to Radarr and Sonarr automatically."
 log_success "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
