@@ -628,30 +628,38 @@ if [ "$RECYCLARR_ENABLED" = "true" ]; then
         # Probe which URL Recyclarr can actually reach for Radarr
         # (curl follows redirects; .NET HttpClient may not, and IPv6/loopback
         #  can behave differently between curl and .NET)
-        RECYCLARR_RADARR_URL=""
-        RECYCLARR_SONARR_URL=""
-        for try_host in "${LOCAL_HOST}" "${HOST_IP}"; do
-            probe=$(curl -sfL --max-time 5 \
-                -H "X-Api-Key: ${RADARR_API_KEY}" \
-                "http://${try_host}:${RADARR_PORT}/api/v3/system/status" 2>/dev/null || true)
-            if echo "$probe" | jq -e '.appName' > /dev/null 2>&1; then
-                RECYCLARR_RADARR_URL="http://${try_host}:${RADARR_PORT}"
-                log_info "  Recyclarr Radarr URL: ${RECYCLARR_RADARR_URL}"
-                break
-            fi
-            log_info "  Radarr not reachable at ${try_host}:${RADARR_PORT} via API — trying next"
-        done
-        for try_host in "${LOCAL_HOST}" "${HOST_IP}"; do
-            probe=$(curl -sfL --max-time 5 \
-                -H "X-Api-Key: ${SONARR_API_KEY}" \
-                "http://${try_host}:${SONARR_PORT}/api/v3/system/status" 2>/dev/null || true)
-            if echo "$probe" | jq -e '.appName' > /dev/null 2>&1; then
-                RECYCLARR_SONARR_URL="http://${try_host}:${SONARR_PORT}"
-                log_info "  Recyclarr Sonarr URL: ${RECYCLARR_SONARR_URL}"
-                break
-            fi
-            log_info "  Sonarr not reachable at ${try_host}:${SONARR_PORT} via API — trying next"
-        done
+        # Probe which URL Recyclarr can reach.
+        # We use curl -L and capture %{url_effective} — the final URL after any
+        # 307 redirects — then strip /api/v3/system/status to get the true
+        # base_url. .NET HttpClient does not follow redirects, so we must give
+        # Recyclarr the already-resolved URL (e.g. including /radarr if set).
+        probe_recyclarr_url() {
+            local port="$1" api_key="$2" label="$3"
+            local tmpbody
+            tmpbody=$(mktemp)
+            for try_host in "${LOCAL_HOST}" "${HOST_IP}"; do
+                local effective
+                effective=$(curl -sfL --max-time 5 \
+                    -H "X-Api-Key: ${api_key}" \
+                    -o "${tmpbody}" \
+                    -w "%{url_effective}" \
+                    "http://${try_host}:${port}/api/v3/system/status" 2>/dev/null || true)
+                if jq -e '.appName' "${tmpbody}" > /dev/null 2>&1; then
+                    rm -f "${tmpbody}"
+                    # Strip the API path suffix to obtain just the base URL
+                    echo "${effective%/api/v3/system/status}"
+                    return 0
+                fi
+                log_info "  ${label} not reachable at ${try_host}:${port} — trying next"
+            done
+            rm -f "${tmpbody}"
+            return 1
+        }
+
+        RECYCLARR_RADARR_URL=$(probe_recyclarr_url "$RADARR_PORT" "$RADARR_API_KEY" "Radarr") || true
+        RECYCLARR_SONARR_URL=$(probe_recyclarr_url "$SONARR_PORT" "$SONARR_API_KEY" "Sonarr") || true
+        log_info "  Recyclarr Radarr URL: ${RECYCLARR_RADARR_URL:-not found}"
+        log_info "  Recyclarr Sonarr URL: ${RECYCLARR_SONARR_URL:-not found}"
 
         if [ -z "$RECYCLARR_RADARR_URL" ] || [ -z "$RECYCLARR_SONARR_URL" ]; then
             log_warn "  Could not determine reachable URL for Radarr/Sonarr — skipping Recyclarr."
